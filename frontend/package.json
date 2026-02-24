@@ -1,0 +1,29 @@
+{
+  "name": "NL2SQL-frontend",
+  "version": "1.0.0",
+  "description": "NL2SQL智能问数系统 - 前端",
+  "type": "module",
+  "scripts": {
+    "dev": "NODE_OPTIONS='--no-deprecation' vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.1.0",
+    "@traptitech/markdown-it-katex": "^3.6.0",
+    "axios": "^1.5.0",
+    "echarts": "^5.4.3",
+    "element-plus": "^2.4.1",
+    "katex": "^0.16.27",
+    "markdown-it": "^13.0.2",
+    "pinia": "^2.1.6",
+    "vue": "^3.3.4",
+    "vue-echarts": "^6.6.1",
+    "vue-router": "^4.2.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^4.3.4",
+    "sass": "^1.66.1",
+    "vite": "^4.4.9"
+  }
+}

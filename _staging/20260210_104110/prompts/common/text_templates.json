@@ -1,0 +1,48 @@
+{
+ "time_units": {
+ "day": "天",
+ "week": "周",
+ "month": "月",
+ "quarter": "季度",
+ "year": "年"
+ },
+
+ "stopwords": [
+ "的", "了", "是", "有", "在", "和", "与", "或", "等",
+ "呢", "吗", "吧", "啊", "也", "都", "就", "还", "又",
+ "这", "那", "这个", "那个", "什么", "怎么", "为什么", "哪",
+ "请", "帮我", "我想", "能否", "可以", "帮忙", "一下",
+ "查询", "查看", "统计", "分析", "给出", "显示", "列出", "看看",
+ "下", "一个", "多少", "几个", "几", "个", "有没有",
+ "关于", "对于", "根据", "按照", "其中", "之", "到"
+ ],
+
+ "total_keywords": [
+ "合计", "总计", "汇总", "小计", "总数", "总和"
+ ],
+
+ "explanation_templates": {
+ "time_range_full_year": " 我帮您查询了 {year}年全年 的数据",
+ "time_range_period": " 我帮您查询了 {start_date} 到 {end_date} 这段时间的数据",
+ "time_range_after": " 我帮您查询了 {start_date} 之后的数据",
+ "time_range_relative": " 我帮您查询了最近 {last_n} {unit}的数据",
+
+ "filter_equal": "{field_name}是 {value}",
+ "filter_in_single": "{field_name}是 {values}",
+ "filter_in_multiple": "筛选出了 {values} 这 {count} 个{field_name}",
+ "filter_in_many": "筛选出了 {values} 等 {count} 个{field_name}",
+ "filter_greater": "{field_name}超过 {value}",
+ "filter_greater_equal": "{field_name}至少为 {value}",
+ "filter_less": "{field_name}小于 {value}",
+ "filter_less_equal": "{field_name}不超过 {value}",
+ "filter_like": "{field_name}中包含 {value}",
+
+ "filter_prefix": " ",
+ "aggregation_metrics_prefix": " 统计了",
+ "aggregation_dimensions_prefix": "，按",
+ "aggregation_dimensions_suffix": "分组"
+ },
+
+ "narrative_default_prompt": "你是数据分析助手。必须先直接回答用户的问题（给出明确结论），随后用简短语言说明依据（检索条件/排序口径）与关键数据点（如分位数/极值/Top），所有数值必须来自 facts，不得编造。数值保留两位小数，语言自然通俗，输出 2-4 句话。"
+}
+

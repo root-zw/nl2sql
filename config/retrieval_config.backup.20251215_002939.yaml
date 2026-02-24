@@ -1,0 +1,1140 @@
+# ===========================================
+# NL2SQL 检索配置文件
+# 统一管理所有检索相关参数
+# ===========================================
+
+# 版本标识
+version: '1.0'
+
+# ===========================================
+# 功能开关总控（统一管理）
+# 所有开关集中在此处，方便快速启用/禁用功能
+# ===========================================
+feature_switches:
+  # ====== 核心检索通道 ======
+  # Dense向量检索（语义相似度）
+  dense_enabled: true
+  # Sparse稀疏检索（BM25关键词匹配）
+  sparse_enabled: true
+  # RRF分数融合（融合Dense和Sparse结果）
+  rrf_enabled: true
+  # Reranker精排（二次排序）
+  reranker_enabled: true
+  
+  # ====== 表检索加分机制 ======
+  # 关键词加分（KeywordExtractor提取的字段/枚举）
+  keyword_boost_enabled: true
+  # 表名关键词匹配
+  name_keyword_match_enabled: true
+  # 表名精确匹配（问题中明确提到表名）
+  exact_table_name_match_enabled: true
+  # 度量覆盖因子
+  measure_coverage_enabled: true
+  # 语义标签匹配
+  tag_match_enabled: true
+  # 枚举加成（对表选择的影响）
+  enum_boost_enabled: true
+  
+  # ====== 表救援与兜底 ======
+  # 表救援机制
+  table_rescue_enabled: true
+  # 跨域兜底
+  cross_domain_fallback_enabled: true
+  # 多域全局检索
+  multi_domain_retrieval_enabled: true
+  
+  # ====== 其他功能 ======
+  # Few-Shot示例检索
+  few_shot_enabled: true
+  # 枚举context_vector精排
+  enum_context_rerank_enabled: true
+  # 枚举分数归一化
+  enum_score_normalization_enabled: true
+  # 跨表一致性守卫
+  cross_table_guard_enabled: true
+  # 枚举同步完整性检查
+  enum_sync_integrity_check_enabled: true
+
+# ===========================================
+# 多连接查询配置
+# ===========================================
+multi_connection:
+  # 是否启用全局语义模型
+  enable_global_model: true
+  
+  # 连接检测策略
+  connection_detection:
+    # 自动检测模式: "strict"(必须明确) | "auto"(自动推断) | "flexible"(灵活)
+    mode: auto
+    # 当检测到跨连接时的处理: "reject"(报错) | "warn"(警告) | "auto_select"(自动选主连接)
+    cross_connection_handling: reject
+    # 是否返回候选连接详情（便于前端提示）
+    return_candidate_details: true
+    # 用户指定冲突处理: "smart"(智能) | "trust_user"(信任用户) | "trust_inference"(信任推断)
+    user_specified_conflict_resolution: smart
+  
+  # 编译器配置
+  compiler:
+    # 跨连接严格模式（true=报错，false=警告）
+    cross_connection_strict: true
+    # 表映射失败处理: "error"(报错) | "warn"(警告) | "skip"(跳过)
+    table_not_found_handling: error
+  
+  # 性能配置
+  performance:
+    # 全局模型缓存TTL（秒）
+    global_model_cache_ttl: 1800
+    # 是否并行加载连接模型
+    parallel_load_connections: true
+    # 最大并行连接数
+    max_parallel_connections: 4
+  
+  # 日志与监控
+  observability:
+    # 是否启用连接解析tracer
+    enable_connection_resolution_tracer: true
+    # 是否启用连接指标收集
+    enable_connection_metrics: true
+    # 日志级别: "debug" | "info" | "warning" | "error"
+    connection_resolution_log_level: info
+
+# ===========================================
+# 业务域检索配置
+# ===========================================
+domain_retrieval:
+  # 最大召回候选数
+  top_k: 4
+  # Dense相似度阈值（低于此值时考虑关键词匹配）
+  threshold: 0.3
+  # Dense通道权重（用于加权RRF）
+  dense_weight: 0.7
+  # Sparse通道权重
+  sparse_weight: 0.3
+  # 多候选选择：分差阈值（相邻候选分差小于此值时保留）
+  score_gap_threshold: 0.05
+  # 多候选选择：阈值边界余量
+  threshold_margin: 0.05
+
+# ===========================================
+# 表检索配置
+# ===========================================
+table_retrieval:
+  # ====== 基础配置 ======
+  # 最大召回表数量
+  top_k: 10
+  # 提供给大模型的表数量（第二阶段截断，<= top_k；为空则不再二次截断）
+  llm_top_k: 3
+  # Dense相似度阈值
+  threshold: 0.3
+  # Dense通道权重（仅当 feature_switches.dense_enabled=true 时生效）
+  dense_weight: 0.5
+  # Sparse通道权重（仅当 feature_switches.sparse_enabled=true 时生效）
+  sparse_weight: 0.5
+  # 候选扩展因子（实际召回数 = top_k * expansion_factor）
+  # 增加召回池大小以提高语义距离较远的表的召回率
+  expansion_factor: 6
+  # Reranker候选数限制（top_k * reranker_limit_factor）
+  # 仅当 feature_switches.reranker_enabled=true 时生效
+  reranker_limit_factor: 3
+  
+  # ====== 加分机制配置 ======
+  # 注：各加分机制的开关由 feature_switches 统一控制
+  boost_mechanisms:
+    # ---- 1. 关键词加分（来自KeywordExtractor的字段/枚举匹配）----
+    # 开关: feature_switches.keyword_boost_enabled
+    keyword_boost:
+      # 每命中一个关键词的加分
+      per_hit: 0.01
+      # 最大加分上限
+      max: 0.05
+      # 噪声守卫：当 keyword_profile 同时命中"过多表"时，降低 keyword_boost，避免排序抖动
+      noise_guard:
+        # 是否启用噪声守卫
+        enabled: true
+        # 命中表数量 / 候选表数量 超过该比例则降权
+        max_table_coverage_ratio: 0.6
+        # 降权系数（0~1）
+        downscale: 0.5
+    
+    # ---- 2. 表名关键词匹配 ----
+    # 开关: feature_switches.name_keyword_match_enabled
+    name_keyword_match:
+      # 每匹配一个关键词的加分
+      per_match: 0.01
+      # 最大加分上限
+      max: 0.03
+      # 关键词最小长度（至少N个字符才算匹配）
+      min_keyword_length: 2
+      # 核心业务关键词列表（这些关键词在表名中出现时会有额外加成）
+      core_business_keywords:
+      - 成交
+      - 批复
+      - 批准
+      - 审批
+      - 征收
+      - 现状
+      - 利用
+      # 核心关键词额外加成值
+      core_keyword_boost: 0.06
+    
+    # ---- 3. 表名精确匹配（问题中明确提到表名）----
+    # 开关: feature_switches.exact_table_name_match_enabled
+    exact_table_name_match:
+      # 精确匹配加成值
+      boost: 0.03
+      # 后缀模式：表名 + 后缀（如"建设用地批准书中"）
+      suffix_patterns:
+      - 中
+      - 内
+      - 里
+      - 数据
+      - 表
+      - 记录
+      - 的
+      # 前缀模式：前缀 + 表名（如"在建设用地批准书"）
+      prefix_patterns:
+      - 在
+      - 从
+      - 查
+      - 取得
+      - 获得
+    
+    # ---- 4. 年份敏感匹配（问题中明确提到年份时优先匹配对应年份的表）----
+    # 核心场景：用户查询"2023年现状水浇地"应优先匹配"2023年土地利用现状"
+    year_sensitive_match:
+      # 是否启用年份敏感匹配
+      enabled: true
+      # 年份匹配加成值（表名年份与问题年份一致时）
+      boost: 0.1
+      # 年份不匹配惩罚值（表名有年份但与问题年份不一致时）
+      # 这避免了"2024年土地利用现状"在查询"2023年"时错误排在前面
+      mismatch_penalty: 0.04
+      # 最新年份关键词列表（当问题中包含这些词时，优先匹配最新年份的表）
+      latest_year_keywords:
+      - 最新
+      - 最新年份
+      - 最新的
+      - 今年
+      - 本年
+      - 当前
+      # 最新年份匹配时的额外加成值
+      latest_year_boost: 0.18
+  
+  # ====== 表救援机制配置 ======
+  # 开关: feature_switches.table_rescue_enabled
+  rescue:
+    # 救援分数：使用当前Top-K最低分，但不低于此值
+    min_rescue_score: 0.2
+
+  # ---- 跨域兜底 ----
+  # 开关: feature_switches.cross_domain_fallback_enabled
+  cross_domain_fallback:
+    # 增加候选域数量，提高跨域召回覆盖率
+    max_candidates: 10
+    # 是否允许无域表参与兜底
+    allow_no_domain: true
+    # 兜底检索的top_k（为空沿用主 top_k）
+    fallback_top_k: null
+    # 设置绝对阈值，低于此分数触发兜底
+    score_threshold: 0.05
+    # 降低 delta 以更敏感触发跨域尝试
+    score_threshold_delta: 0.02
+    # 最小结果数（>1 时启用数量不足判定）
+    min_results: 1
+
+  # ---- 多域全局统一检索（方案A）----
+  # 开关: feature_switches.multi_domain_retrieval_enabled
+  multi_domain_retrieval:
+    # 参与表检索的候选域数量（从业务域检测TOP N中选择）
+    candidate_domain_count: 5
+    # 每个域返回的表数量
+    top_k_per_domain: 5
+    # 全局检索的候选数量限制（建议 = candidate_domain_count * top_k_per_domain）
+    # 影响检索速度：越大召回越全但速度越慢
+    global_top_k: 25
+    # 最小字段数（低于该值认为表结构不可用，多域选表阶段剔除以避免误选空表）
+    min_table_field_count: 1
+    # 表质量评估权重（用于综合评分）
+    quality_weights:
+      # 表检索分数权重（基于全局RRF+Reranker）
+      table_score: 0.9
+      # 业务域得分权重（归一化后）
+      domain_score: 0.1
+
+# ===========================================
+# 表打分配置（V2 - 替换旧的枚举加成逻辑）
+# ===========================================
+table_scoring:
+  # 表排序公式版本标识（供调参脚本/诊断脚本读取）
+  # - v2: 使用 V2 公式（关闭 v3_ranker）
+  # - v3: 使用 V3 公式（启用 v3_ranker）
+  # - v4: 使用 V4 公式（启用 v4_ranker）
+  ranker_version: v4
+  # ---- 业务域匹配（V3：排序算子，不做前置过滤）----
+  domain_match:
+    # 是否启用业务域加权
+    enabled: true
+    # 业务域权重（建议 0.15~0.2）
+    weight: 0.2
+    # 低置信度阈值：低于此值时额外降权
+    low_confidence_threshold: 0.35
+    # 用于估计“候选域分差”的尺度（top1-top2 的归一化参考）
+    score_gap_ref: 0.1
+    # 低置信度额外降权系数（0~1）
+    low_confidence_extra_downscale: 0.5
+    # keyword 方法的额外降权系数（0~1）
+    keyword_method_downscale: 0.7
+    # 弱方法/异常回退的额外降权系数（0~1）
+    weak_method_downscale: 0.5
+
+  # ---- 表救援（V3：作为分数修正项，而非硬插入）----
+  table_rescue:
+    # 触发救援后的加分（用于让救援表进入精排候选，但仍由整体公式决定最终顺序）
+    boost: 0.15
+
+  # ---- 枚举加成参数 ----
+  # 开关: feature_switches.enum_boost_enabled
+  enum_boost:
+    # 枚举门控阈值（context_similarity需要达到此值才能通过门控）
+    context_threshold: 0.2
+    # exact/synonym 匹配加成（精确匹配或同义词匹配）
+    exact_boost: 0.02
+    # value_vector 匹配加成（向量相似度匹配）
+    vector_boost: 0.01
+    # 单表枚举加成上限（避免单表因多个枚举匹配获得过高加成）
+    max_boost: 0.03
+  
+  # ---- Reranker 增强输入 ----
+  # 仅当 feature_switches.reranker_enabled=true 时生效
+  reranker_input:
+    # 是否包含表描述
+    include_description: true
+    # 是否包含语义标签（tags）
+    include_tags: true
+    # 是否包含度量字段列表
+    include_measures: true
+  
+  # ---- 度量覆盖（乘法因子）----
+  # 开关: feature_switches.measure_coverage_enabled
+  measure_coverage:
+    # ---- 度量抽取（统一归一化 + 噪声守卫 + 最长子串回退）----
+    # 说明：
+    # - Stage1: 分词 token 精确命中
+    # - Stage2: 仅在 Stage1 为空/仅命中通用统计/短泛词时触发最长子串回退
+    extraction:
+      # 归一化配置（仅影响度量抽取/匹配，不改变原始问题文本）
+      normalization:
+        # Unicode NFKC（全角半角/兼容等）
+        nfkc: true
+        # 小写化（对中英文混排更鲁棒）
+        lowercase: true
+        # 移除标点（建议启用；中文标点/符号更常见）
+        remove_punct: true
+        # 空白折叠
+        collapse_whitespace: true
+      # 最短短语长度：过短短语更容易引入噪声（Stage2 会额外受 generic_terms 限制）
+      min_phrase_len: 3
+      # 短而泛的词（不允许仅靠 Stage2 子串回退命中；必须由更长短语映射得到）
+      generic_terms:
+      - 面积
+      - 金额
+      - 数量
+      - 总
+      - 数
+      - 量
+      - 值
+      - 额
+      # 度量形态后缀：用于 Stage2 边界守卫（命中短语若包含这些后缀，可放宽边界要求）
+      suffix_keywords:
+      - 面积
+      - 金额
+      - 价
+      - 单价
+      - 总价
+      - 均价
+      - 率
+      - 比
+      - 容积率
+      # 单位提示：识别问题中的单位以辅助度量类型判断
+      # 默认仅在“数字+单位”模式下生效（避免把字段备注/名称中的单位当成度量意图）
+      unit_detection:
+        require_number: true
+      # 概念 -> 单位列表（命中后会把该概念加入 required_concepts，提升面积/金额类度量的匹配权重）
+      unit_hints:
+        面积:
+        - 公顷
+        - 亩
+        - 平方米
+        - 平方公尺
+        - ㎡
+        - m2
+        - m²
+        - 平方千米
+        - 平方公里
+        金额:
+        - 元
+        - 万元
+        - 亿元
+        - 万
+        - 亿
+
+    # 覆盖率为0时的最低因子（降权不淘汰）
+    partial_min: 0.7
+    # 度量关键词（用于从问题中提取）
+    keywords:
+    - 面积
+    - 土地面积
+    - 用地面积
+    - 建筑面积
+    - 图形面积
+    - 出让面积
+    - 金额
+    - 总价
+    - 地价
+    - 楼面地价
+    - 容积率
+    - 成交价
+    - 成交总价
+    # 通用度量关键词（不区分具体度量类型）
+    universal_keywords:
+    - 宗数
+    - 数量
+    - 条数
+    - 笔数
+    - 件数
+    - 记录数
+    - 个数
+    - 多少
+    # 复合关键词映射（复合词 -> 基础度量词）
+    compound_keywords:
+      耕地面积: 面积
+      农用地面积: 面积
+      建设用地面积: 面积
+      未利用地面积: 面积
+      总用地面积: 面积
+      总用地: 面积
+      用地面积: 面积
+      成交总价: 总价
+      总面积: 面积
+      图斑面积: 面积
+      规划面积: 面积
+
+    # 度量族映射（同族短语 -> 统一概念 key）
+    # 目的：避免不同表/不同写法导致覆盖率与匹配信号不稳定（不做IDF）
+    measure_families:
+      楼面地价: 地价
+      地价: 地价
+      单价: 地价
+      成交价: 总价
+      成交总价: 总价
+      总价: 总价
+      图斑面积: 面积
+      用地面积: 面积
+      土地面积: 面积
+      建筑面积: 面积
+      出让面积: 面积
+      容积率: 容积率
+
+  # ---- 度量字段（PG）表级信号：字段打分 -> 表级聚合 -> 加权加分 ----
+  measure_pg:
+    enabled: true
+    weight: 0.12
+    top_k_fields: 20
+    table_agg: max  # max | sum_top2
+    apply_when_measure_intent: true
+
+  # ---- 度量字段（Milvus）表级信号：field hybrid search -> 表级聚合 -> 加权加分 ----
+  measure_field_milvus:
+    enabled: true
+    weight: 0.12
+    top_k_fields: 50
+    min_field_score: 0.0
+    # true: 使用“度量短语/概念”为主构建稠密向量（更聚焦）；false: 复用全局 question 向量（默认）
+    use_measure_query_vector: false
+    apply_when_measure_intent: true
+
+  # ---- 度量救援（基于 Milvus 字段强命中）----
+  # 注意：救援仅“进池”，最终排序仍由统一公式决定
+  measure_rescue:
+    enabled: true
+    threshold: 0.85
+  
+  # ---- 语义标签匹配（加法加成，基于 db_tables.tags）----
+  # 开关: feature_switches.tag_match_enabled
+  tag_match:
+    # 匹配语义标签的加成
+    per_tag_boost: 0.09
+    # 语义标签加成上限
+    max_boost: 0.09
+
+  # ---- V3 Ranker 配置 ----
+  v3_ranker:
+    # 是否启用V3排序器
+    enabled: false
+    # 基础相关性beta参数
+    base_rel_beta: 0.0
+    # 度量门控配置
+    measure_gate:
+      # 是否启用度量门控
+      enabled: true
+      # 最小命中数（度量关键词命中数需达到此值才通过门控）
+      min_hits: 1
+    # 年份不匹配惩罚系数（0~1，越小惩罚越大）
+    year_mismatch_multiplier: 0.98
+
+  # ---- V4 Ranker 配置（打分表 V4.0：全局Boost封顶 + Gate + Anti-flip + 低置信降级）----
+  # 说明：
+  # - 默认关闭（enabled=false），避免影响现有线上行为
+  # - 开启后，表打分将按“定稿版公式体系”执行：
+  #   S_final = max(S_penalty + Gate(S_penalty) * min(B_raw, lambda * S_penalty) + B_rescue, S_penalty)
+  v4_ranker:
+    # 是否启用 V4 排序器
+    enabled: true
+    # 基础相关性稳健化参数（与 V3 一致）：S_base *= (base_rel ** beta)
+    base_rel_beta: 0.0
+
+    # Gate(S) 分段阈值
+    gate:
+      tau_low: 0.2
+      tau_high: 0.5
+      mid_value: 0.3
+
+    # 全局 Boost 封顶：B_clamped = min(B_raw, lambda * S_penalty)
+    global_boost_cap:
+      # 严格建议范围 [0.3, 0.6]（运行时会 clamp）
+      lambda: 0.4
+
+    # Safety Clamp：S_final = max(S_final, S_penalty)
+    safety_clamp:
+      enabled: true
+
+    # Anti-flip：当 |S_final(A)-S_final(B)| < epsilon 时，用 S_penalty 做 tie-break
+    anti_flip:
+      enabled: true
+      epsilon: 0.02
+
+    # 年份强冲突乘法惩罚（仅当 evidence.year_mismatch=true 时生效）
+    # 说明：值越小惩罚越大；若你已在召回阶段用加减分处理年份，也可保持为 1.0
+    year_mismatch_multiplier: 1.0
+
+    # 结构惩罚（乘法）：用于“空表/字段极少表”降权（可按需启用）
+    structure_penalty:
+      enabled: false
+      # field_count <= min_field_count 时应用 multiplier
+      min_field_count: 1
+      multiplier: 0.7
+
+    # 低置信降级：当 max(S_penalty) < tau_low_fallback 时进入保守模式
+    low_confidence:
+      enabled: true
+      tau_low_fallback: 0.2
+      # 降级策略：
+      # - sparse_only：仅用 sparse_score 重排（无 sparse_score 则回退 rrf/base）
+      # - sparse_heavy_blend：用 0.2*dense + 0.8*sparse（需 dense/sparse 可用）
+      # - rerun_sparse_heavy：触发一次高 sparse 权重重跑（仅在工程支持时使用）
+      rerank_strategy: sparse_only
+
+# ===========================================
+# 枚举值检索配置
+# ===========================================
+enum_retrieval:
+  # 最大召回数量
+  top_k: 1
+  # 每个字段最大枚举数
+  per_field_limit: 3
+  # 精确匹配RRF加权
+  exact_boost: 0.6
+  # 同义词匹配RRF加权
+  synonym_boost: 0.4
+  # Dense通道权重（value_vector）
+  dense_weight: 0.5
+  # 关键词命中时的分数增益
+  keyword_gain: 0.05
+  # Sparse通道权重（BM25）
+  sparse_weight: 0.5
+  # 最小最终得分阈值
+  min_final_score: 0.0
+  # 标准放行阈值：普通字段需达到此分数才放行
+  high_confidence_threshold: 0.3
+  # 高噪声字段放行阈值：批次名/项目名称等长文本字段需更高阈值
+  high_noise_threshold: 0.5
+  # 高噪声字段列表：这些字段需要更高阈值或显式提及才放行
+  high_noise_fields:
+  - 批次名
+  - 批次名称
+  - 项目名称
+  - 坐落
+  - 备注
+  - 描述
+  - 项目
+  - 名称
+  - 地址
+  - 详细地址
+  - 说明
+  - 内容
+  # 同字段多值时的分差阈值：超过此值对低分项降权
+  negative_signal_score_gap: 0.3
+  # 降权最大值
+  negative_signal_max_penalty: 0.15
+  # value_vector匹配触发强制补滤的最低分数
+  force_filter_min_score: 0.9
+  # 分数归一化配置
+  # 开关: feature_switches.enum_score_normalization_enabled
+  score_normalization:
+    # 归一化方法：sigmoid / minmax
+    method: sigmoid
+    # BM25 归一化缩放因子（sigmoid时为曲线参数，minmax时为最大值）
+    sparse_scale: 10.0
+    # COSINE 已在 [0,1]，是否直接透传
+    dense_passthrough: true
+  # 每个高噪声字段最多放行的枚举数
+  per_high_noise_field_limit: 1
+  # 高噪声低分项是否从LLM prompt中排除
+  exclude_from_llm_prompt: true
+
+  # ====== 精确/同义词“包含匹配”后验校验（提升精确匹配与表辅助找准）======
+  exact_match:
+    # contains（user_input 包含枚举值/同义词）命中后，是否要求 value_mentioned 通过校验（防止 ab 命中 abc）
+    contains_requires_value_mention: true
+    # 高噪声字段（如项目名称/批次名）发生 contains 命中时，是否要求枚举值出现在引号中
+    high_noise_contains_requires_quote: true
+    # 仅当值长度 >= 该阈值时才强制要求引号（避免对短值过度收紧）
+    high_noise_min_quote_length: 6
+    # 若问题中显式提到了字段名，则允许高噪声值不在引号中也通过（用于“项目名称为xxx”这类表达）
+    allow_unquoted_if_field_mentioned: true
+
+  # ====== context_vector 精排配置（双向量：value_vector + context_vector）======
+  context_rerank:
+    dynamic_weights: true
+    default_weight_value: 0.4
+    default_weight_context: 0.6
+    high_confidence_threshold: 0.8
+    low_confidence_threshold: 0.5
+    fill_missing_context_vector:
+      enabled: false
+      per_field_limit: 2
+
+  # ====== RRF 融合配置（exact/synonym/vector 多源融合）======
+  rrf:
+    dynamic_weights: true
+    exact_high_score_threshold: 0.9
+    vector_high_rrf_threshold: 0.5
+    # 自适应 k：按 sources 总结果数量决定
+    total_results_small_threshold: 10
+    total_results_medium_threshold: 50
+    k_small: 20
+    k_medium: 40
+    k_large: 60
+
+# ===========================================
+# Few-Shot 检索配置
+# ===========================================
+# 开关: feature_switches.few_shot_enabled
+few_shot_retrieval:
+  # 是否启用Few-Shot检索
+  enabled: true
+  # 召回候选数量
+  top_k: 6
+  # 返回给LLM的最大示例数
+  prompt_max_examples: 3
+  # 相似度阈值
+  similarity_threshold: 0.3
+  # 最低质量分
+  min_quality_score: 0.7
+  # Dense通道权重（Few-Shot仅用Dense）
+  dense_weight: 1.0
+  # Sparse通道权重
+  sparse_weight: 0.0
+  # 是否启用问题归一化
+  normalize_question: true
+  # Dense优先级（语义排名限制）
+  dense_priority: 2
+  # 是否立即同步到向量库
+  immediate_sync: false
+  # 全量同步时是否包含Few-Shot
+  sync_in_full_sync: true
+  # 直接执行相关配置
+  direct_execution:
+    # 是否启用直接执行
+    enabled: false
+    # 最小相似度阈值
+    min_similarity: 0.95
+    # 最小质量分阈值
+    min_quality: 0.9
+    # 允许直接执行的来源白名单
+    source_whitelist:
+    - manual
+    - auto
+
+# ===========================================
+# 度量字段检索配置
+# ===========================================
+measure_retrieval:
+  # 最大召回数量
+  top_k: 5
+  
+  # ---- 评分配置（消除硬编码）----
+  scoring:
+    # 聚合类型完全匹配加分
+    aggregation_match_boost: 0.3
+    # 度量相关性加分（字段类型匹配）
+    measure_relevance_boost: 0.2
+    # 部分匹配加分
+    partial_match_boost: 0.1
+    # 名称匹配加分
+    name_match_boost: 0.1
+    # 默认基础分数
+    default_score: 0.05
+  
+  # 聚合意图关键词映射
+  aggregation_hints:
+    SUM:
+    - 总
+    - 合计
+    - 累计
+    - 总计
+    - 加总
+    COUNT:
+    - 数量
+    - 个数
+    - 多少
+    - 宗数
+    - 几个
+    AVG:
+    - 平均
+    - 均值
+    - 平均值
+    MAX:
+    - 最大
+    - 最高
+    - 最多
+    MIN:
+    - 最小
+    - 最低
+    - 最少
+  # 度量字段关键词
+  measure_keywords:
+  - 面积
+  - 金额
+  - 数量
+  - 总计
+  - 用地
+  - 土地
+
+# ===========================================
+# RRF 融合配置
+# ===========================================
+# 开关: feature_switches.rrf_enabled
+rrf:
+  # RRF k参数（越小分数区分度越大）
+  k: 60
+  # 是否启用加权RRF（true=使用权重，false=标准RRF）
+  weighted: false
+  # 默认Dense权重（仅当 feature_switches.dense_enabled=true 时生效）
+  default_dense_weight: 0.6
+  # 默认Sparse权重（仅当 feature_switches.sparse_enabled=true 时生效）
+  default_sparse_weight: 0.4
+
+# ===========================================
+# Reranker 配置
+# ===========================================
+# 开关: feature_switches.reranker_enabled
+reranker:
+  # 与RRF融合的权重（0=纯RRF, 1=纯Reranker）
+  weight: 0.3
+  # 是否归一化输出（sigmoid）
+  normalize_output: true
+  # 请求超时（秒）
+  timeout: 20
+  # 是否对负分应用sigmoid修正
+  sigmoid_correction: true
+
+# ===========================================
+# 文本处理配置
+# ===========================================
+text_processing:
+  # BM25文本长度限制
+  bm25_text_limit: 512
+  # Dense文本长度限制
+  dense_text_limit: 1024
+  # 枚举基数阈值（超过此值视为高基数字段）
+  enum_cardinality_threshold: 5000
+  # 混合值加成因子
+  hybrid_value_boost: 3.0
+
+# ===========================================
+# Milvus 搜索参数配置
+# ===========================================
+milvus:
+  # Dense向量搜索参数
+  dense_search:
+    # 距离度量类型：COSINE（余弦相似度）
+    metric_type: COSINE
+    params:
+      # 搜索时查询的聚类中心数量（越大精度越高但速度越慢）
+      nprobe: 16
+  # Sparse向量搜索参数
+  sparse_search:
+    # 距离度量类型：BM25（BM25相似度）
+    metric_type: BM25
+    params:
+      # 搜索时丢弃的稀疏向量比例（用于加速）
+      drop_ratio_search: 0.1
+  # HNSW索引参数
+  hnsw_index:
+    # 每个节点的最大连接数（越大精度越高但内存占用越大）
+    M: 16
+    # 构建索引时的搜索范围（越大精度越高但构建时间越长）
+    efConstruction: 200
+  # BM25索引参数
+  bm25_index:
+    # BM25 k1参数（控制词频饱和度）
+    k1: 1.2
+    # BM25 b参数（控制文档长度归一化）
+    b: 0.75
+
+# ===========================================
+# 分词配置（统一管理）
+# ===========================================
+tokenization:
+  # ---- 词典配置 ----
+  # 领域词典路径
+  domain_dict_path: config/domain_dict.txt
+  # 额外词典路径列表（可添加多个）
+  extra_dict_paths: []
+  # 是否在启动时预热分词器（避免冷启动延迟）
+  preload_on_startup: true
+  # 预热文本（用于触发jieba构建前缀词典）
+  warmup_text: 武汉市江岸区建设用地批准书用地面积统计
+  
+  # ---- SQL标识符保护 ----
+  # 是否保护SQL标识符（避免分词器拆分表名.字段名等）
+  protect_sql_identifiers: true
+  # SQL标识符正则模式列表
+  sql_identifier_patterns:
+  - \b[a-zA-Z_]\w*\.[a-zA-Z_]\w*\b  # t1.col_name
+  - \b[a-zA-Z_]\w*_[a-zA-Z_]\w*\b   # field_name
+  
+  # ---- jieba分词参数 ----
+  jieba:
+    # 是否使用HMM模型识别新词（true=更准确但稍慢）
+    use_hmm: false
+    # 是否使用全模式（true=召回更多但精度低）
+    cut_all: false
+    # 词性标注是否启用
+    enable_pos_tagging: false
+  
+  # ---- Dense分词配置 ----
+  dense:
+    # 是否移除停用词（Dense保留上下文）
+    remove_stopwords: false
+    # 是否转换为小写
+    lowercase: true
+    # 是否使用实体预识别
+    use_entity_recognition: false
+  
+  # ---- Sparse分词配置 ----
+  sparse:
+    # 是否移除停用词（Sparse剔除停用词）
+    remove_stopwords: true
+    # 是否转换为小写
+    lowercase: true
+    # 是否使用实体预识别（长词优先）
+    use_entity_recognition: true
+  
+  # ---- 缓存配置 ----
+  cache:
+    # 是否启用分词结果缓存
+    enabled: true
+    # 缓存最大条目数（LRU策略）
+    max_size: 10000
+    # 缓存过期时间（秒，0=不过期）
+    ttl: 0
+  
+  # ---- 性能监控 ----
+  performance:
+    # 是否记录分词耗时
+    log_timing: false
+    # 慢分词阈值（毫秒，超过此值记录警告）
+    slow_threshold_ms: 50
+
+# ===========================================
+# 领域词典生成配置（scripts/sync_domain_dict.py）
+# ===========================================
+domain_dict_generation:
+  # 词频配置（jieba userdict：词语 词频 词性）
+  # 说明：
+  # - 表/字段/枚举建议高词频，强制作为独立 token（解决结构元素被切碎）
+  # - synonym 可略低，避免过度合并
+  freq:
+    domain: 5000
+    table: 20000
+    field: 20000
+    enum: 20000
+    synonym: 18000
+    fixed: 100
+
+  # 枚举同步门控（写入 domain_dict，仅影响分词，不影响 Milvus 同步）
+  enum_sync:
+    enabled: true
+    # 最小出现频次（依赖 field_enum_values.frequency）
+    min_frequency: 5
+    # 最大枚举值长度（过长易噪声/易切分）
+    max_value_length: 32
+    # 每个字段最多写入的枚举值数量（防止词典膨胀）
+    max_per_field: 2000
+    # 高基数字段阈值（>= 该阈值视为高基数，走 Top-N）
+    # 默认建议与 text_processing.enum_cardinality_threshold 保持一致
+    cardinality_threshold: 5000
+    # 高基数字段 Top-N（按 frequency 降序）
+    top_n_when_high_cardinality: 500
+    # high_noise_fields: 若不配置，默认复用 enum_retrieval.high_noise_fields
+
+# ===========================================
+# 置信度计算配置
+# ===========================================
+confidence:
+  # 各因素权重
+  weights:
+    # 业务域Dense得分
+    A1_domain_dense: 0.12
+    # 表检索得分
+    A2_table_score: 0.2
+    # 精确枚举匹配数
+    A3_enum_exact_count: 0.12
+    # 度量匹配得分
+    A4_measure_match: 0.08
+    # 维度三元组数量
+    A5_triplet_count: 0.08
+    # RRF Top得分
+    A6_rrf_top: 0.15
+    # Reranker得分
+    A7_reranker: 0.1
+    # Few-Shot精确匹配
+    B1_fewshot_exact: 0.1
+    # 关键词命中率
+    B2_keyword_hit_ratio: 0.05
+  # 置信度分级阈值
+  thresholds:
+    # 高置信度
+    high: 0.75
+    # 中等置信度
+    medium: 0.45
+    # 低于medium为低置信度
+
+# ===========================================
+# 软过滤配置
+# ===========================================
+soft_filter:
+  # 业务域过滤
+  domain:
+    # 高置信度阈值（>=此值时对匹配域加权）
+    high_confidence_threshold: 0.6
+    # 匹配域加权因子
+    match_boost_factor: 1.2
+  # 表过滤
+  table:
+    # Few-Shot推荐表加权因子
+    fewshot_boost_factor: 1.1
+
+# ===========================================
+# 字段排序配置
+# ===========================================
+field_sorting:
+  # 枚举反馈排序权重：field_score += alpha * max(enum_final_score)
+  enum_feedback_alpha: 0.3
+  # 枚举反馈影响放大系数
+  enum_boost_multiplier: 10
+
+# ===========================================
+# Prompt策略配置
+# ===========================================
+prompt_strategy:
+  # 枚举值混合传递策略阈值
+  enum_thresholds:
+    # 强制使用（预填充）阈值
+    force_use: 0.98
+    # 强烈建议（function参数）阈值
+    strong_suggest: 0.9
+    # 供参考（prompt提示）阈值
+    weak_hint: 0.7
+    # 低于weak_hint则丢弃
+
+# ===========================================
+# LLM 上下文组织策略（避免硬编码：统一由配置驱动）
+# ===========================================
+llm_prompt:
+  # System Prompt配置
+  system_prompt:
+    # 是否在 system prompt 中包含"静态 few-shot 示例"
+    # 当前默认关闭：仅依赖检索到的 few-shot（在 user prompt 中注入）
+    include_static_few_shot: false
+  # 枚举指南配置
+  enum_guidance:
+    # 仅当本次确实向 LLM 上下文注入了枚举信息（prefill/suggest/hint/cross-table warning）时才追加指南
+    enabled: true
+  # 枚举值注入策略
+  enum_values:
+    # 枚举"可选值示例"注入策略：
+    # - relevant_only: 仅对与问题/枚举命中相关的字段输出枚举示例（默认，降噪）
+    # - all: 对所有枚举字段都输出枚举示例（更耗 tokens）
+    mode: relevant_only
+    # 无论是否在问题中出现，都始终保留枚举示例的字段（字段显示名或 field_id 均可）
+    always_include_fields:
+    - 行政区
+    - 年份
+  # 冲突警告配置
+  conflict_warning:
+    # 跨表同名字段冲突提示策略：
+    # - global_once: 全局提示一次（默认）
+    # - per_table: 每张表重复提示一次（更显眼但更噪）
+    mode: global_once
+  # 问题区块配置
+  question_section:
+    # format_prompt_for_llm 中，用户问题后面的区块标签（避免误导模型输出 SQL）
+    label: IR
+
+# ===========================================
+# 编译器配置
+# ===========================================
+compiler:
+  # 跨表一致性守卫
+  # 开关: feature_switches.cross_table_guard_enabled
+  cross_table_guard:
+    # 严格模式：true=强制报错, false=尝试切换后报错
+    strict: false
+
+# ===========================================
+# Trace 日志配置
+# ===========================================
+trace:
+  # 是否在trace中包含详细表信息
+  include_table_info: true
+
+# ===========================================
+# 枚举同步配置
+# ===========================================
+enum_sync:
+  # 同步完整性检查
+  # 开关: feature_switches.enum_sync_integrity_check_enabled
+  integrity_check:
+    # 最小覆盖率阈值
+    min_coverage_ratio: 0.8
+    # 高价值字段列表（必须同步）
+    high_value_fields:
+    - 行政区
+    - 年份
+    - 用途
+
+# ===========================================
+# 关键词提取器配置
+# ===========================================
+keyword_extractor:
+  # 字段类型对表打分的权重系数
+  boost_weights:
+    # 度量字段权重（较低，避免过度影响表选择）
+    measure: 0.3
+    # 维度字段权重
+    dimension: 1.0
+    # 枚举匹配权重
+    enum: 1.0
+  # KeywordExtractor 的分词与噪声控制（增强鲁棒性，适配不同数据源/问法）
+  tokenization:
+    # 推荐开启：与系统统一 Tokenizer 对齐（自定义词典/停用词策略/SQL标识符保护）
+    use_shared_tokenizer: true
+    # token 最小长度（过短 token 容易造成误匹配）
+    min_token_len: 2
+    # token 数量上限（防止长问题导致 token 爆炸 -> boost 噪声）
+    max_tokens: 128
+    # 额外停用词（项目可按需配置；避免写死业务词）
+    extra_stopwords: []
+    # regex fallback 下是否启用滑动窗口扩展（默认关闭，避免噪声；需要短词召回时可开启）
+    enable_sliding_window: false
+    # 滑动窗口配置
+    sliding_window:
+      # 最大窗口大小
+      max_window: 4
+      # 最大扩展数
+      max_expansions: 200
+
+# ===========================================
+# 同步实体增强配置
+# ===========================================
+sync_enhancement:
+  # ---- 高价值维度字段标识 ----
+  # 这些字段在bm25_text中会添加"核心维度"标识增强召回
+  high_value_dimensions:
+  - 行政区
+  - 年份
+  - 用途
+  - 类型
+  - 状态
+  - 街道
+  
+  # ---- 重要字段识别关键词 ----
+  # 用于从表的字段列表中识别重要字段
+  important_field_keywords:
+    # 度量字段关键词
+    measure:
+    - 面积
+    - 数量
+    - 金额
+    - 总
+    - 数
+    - 量
+    - 值
+    - 额
+    # 维度字段关键词
+    dimension:
+    - 行政区
+    - 区域
+    - 年份
+    - 年度
+    - 类型
+    - 名称
+    - 状态
+    - 代码
+    # 时间字段关键词
+    time:
+    - 时间
+    - 日期
+    - 日
+    - 时
+  
+  # ---- 枚举值变体生成配置 ----
+  enum_variant_generation:
+    # 行政区后缀（去除后生成简称变体）
+    admin_suffixes:
+    - 区
+    - 县
+    - 市
+    - 镇
+    - 乡
+    - 街道
+    - 街
+    
+    # 开发区/新区后缀替换规则
+    zone_replacements:
+    - pattern: 新技术开发区
+      replacement: 高新
+    - pattern: 经济技术开发区
+      replacement: 经开
+    - pattern: 开发区
+      replacement: ''
+    - pattern: 新区
+      replacement: ''
+    
+    # 地名别名映射（武汉特有，可按需扩展）
+    location_aliases:
+      东湖新技术开发区:
+      - 东湖高新
+      - 光谷
+      - 高新区
+      武汉经济技术开发区:
+      - 经开区
+      - 沌口
+      东湖生态旅游风景区:
+      - 东湖景区
+      - 磨山
+      长江新区:
+      - 长江新城

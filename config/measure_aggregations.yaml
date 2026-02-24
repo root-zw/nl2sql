@@ -1,0 +1,99 @@
+# ===========================================
+# 度量聚合类型配置
+# ===========================================
+# 用于标准化度量字段的聚合函数处理
+#
+# 注意：
+# - 度量覆盖率计算配置（measure_coverage）已统一迁移至 
+#   config/retrieval_config.yaml 中的 table_scoring.measure_coverage 配置节点
+# - 本文件仅保留聚合类型定义和默认聚合推断规则
+
+# 聚合函数类型定义
+aggregation_types:
+  SUM:
+    display_name: "求和"
+    description: "对数值字段求和，适用于金额、面积、数量等可加性指标"
+    applicable_to: ["金额", "面积", "数量", "重量", "体积"]
+    default_format: "{:,.2f}"
+    sql_template: "SUM({column})"
+    requires_column: true
+    
+  AVG:
+    display_name: "平均值"
+    description: "计算数值字段的平均值"
+    applicable_to: ["金额", "面积", "比率", "得分"]
+    default_format: "{:,.2f}"
+    sql_template: "AVG({column})"
+    requires_column: true
+    
+  COUNT:
+    display_name: "计数"
+    description: "统计记录数量，不依赖具体字段"
+    applicable_to: ["all"]
+    sql_template: "COUNT(*)"
+    requires_column: false
+    is_universal: true  # 通用度量，适用所有表
+    
+  COUNT_DISTINCT:
+    display_name: "去重计数"
+    description: "统计字段的不重复值数量"
+    sql_template: "COUNT(DISTINCT {column})"
+    requires_column: true
+    
+  MAX:
+    display_name: "最大值"
+    description: "获取字段的最大值"
+    applicable_to: ["金额", "面积", "日期", "数量"]
+    sql_template: "MAX({column})"
+    requires_column: true
+    
+  MIN:
+    display_name: "最小值"
+    description: "获取字段的最小值"
+    applicable_to: ["金额", "面积", "日期", "数量"]
+    sql_template: "MIN({column})"
+    requires_column: true
+
+# 默认聚合推断规则（当字段未配置default_aggregation时使用）
+default_aggregation_inference:
+  - field_name_pattern: ".*(金额|价格|费用|成本|收入|支出).*"
+    default_agg: "SUM"
+    reason: "金额类字段通常需要求和"
+    
+  - field_name_pattern: ".*(面积|长度|宽度|高度|体积|重量).*"
+    default_agg: "SUM"
+    reason: "度量类字段通常需要求和"
+    
+  - field_name_pattern: ".*(比率|占比|百分比|得分|评分).*"
+    default_agg: "AVG"
+    reason: "比率类字段通常需要平均"
+    
+  - field_name_pattern: ".*(日期|时间).*"
+    default_agg: "MAX"
+    reason: "时间类字段通常取最大值（最新）"
+    
+  - field_name_pattern: ".*(数量|个数).*"
+    default_agg: "SUM"
+    reason: "数量类字段通常需要求和"
+
+# 通用度量识别规则
+universal_measure_detection:
+  enabled: true
+  
+  # 判断条件：同时满足以下条件才算通用度量
+  criteria:
+    no_field_dependencies: true  # 无字段依赖
+    formula_patterns:            # 公式匹配模式（任一满足）
+      - "COUNT\\(\\*\\)"
+      - "COUNT\\s*\\(\\s*\\*\\s*\\)"
+      - "EXISTS"
+      - "CASE\\s+WHEN\\s+COUNT"
+  
+  # 权重配置
+  boost_weight:
+    universal_keyword_match: 1.0  # 通用度量关键词匹配权重（与普通度量相同）
+    non_universal_keyword: 1.0    # 普通度量词权重
+
+# 注意：度量覆盖率计算配置（measure_coverage）已迁移至 
+# config/retrieval_config.yaml 的 table_scoring.measure_coverage 节点
+

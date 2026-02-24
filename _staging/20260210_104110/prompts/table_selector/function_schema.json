@@ -1,0 +1,72 @@
+{
+  "type": "function",
+  "function": {
+    "name": "select_tables",
+    "description": "从候选表中选择与用户问题最相关的数据表。默认只选1张表，除非用户明确要求跨表查询。不同业务阶段的表（如'批复'和'报批'）禁止合并。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "candidates": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "properties": {
+              "table_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                "description": "表的唯一标识，必须精确复制候选表中的UUID（格式：8-4-4-4-12，共36字符）"
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "该表与问题的相关度。标签匹配0.85+，描述匹配0.7-0.85，仅表名/字段匹配0.3-0.7，无标签描述的表不超过0.5"
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 40,
+                "description": "选择该表的简要理由（不超过20字）"
+              }
+            },
+            "required": ["table_id", "confidence", "reason"]
+          },
+          "description": "置信度>=0.3的候选表（最多5个），按相关性从高到低排序"
+        },
+        "primary_table": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "最推荐的主表ID，必须是候选表中置信度最高且业务语义最匹配的表"
+        },
+        "selection_summary": {
+          "type": "string",
+          "maxLength": 160,
+          "description": "整体选择理由（不超过80字），需说明为何选择该表而非其他相似表"
+        },
+        "is_multi_table_query": {
+          "type": "boolean",
+          "description": "是否需要多表查询。默认false。仅当：1)年份分区表需跨年；2)用户明确要求跨表关联时设为true。注意：表名相似但业务阶段不同的表不算多表查询需求"
+        },
+        "multi_table_mode": {
+          "type": "string",
+          "enum": ["single", "compare", "union", "multi_join"],
+          "description": "single=单表（默认，含单表多年数据）；compare=年份分区表跨年对比（计算变化率）；union=年份分区表跨年合并（UNION ALL）；multi_join=用户明确要求的跨业务表关联。注意：不同业务阶段的表禁止使用跨年模式"
+        },
+        "multi_table_hint": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "当is_multi_table_query为true时，说明需要哪些表及原因"
+        },
+        "recommended_table_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "description": "推荐的表ID列表。single模式只含primary_table；跨年模式包含所有年份表（降序）；multi_join包含用户明确指定的表"
+        }
+      },
+      "required": ["candidates", "primary_table", "selection_summary", "is_multi_table_query", "multi_table_mode", "recommended_table_ids"]
+    }
+  }
+}

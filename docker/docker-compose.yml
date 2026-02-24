@@ -1,0 +1,203 @@
+# ==========================================
+# NL2SQL 统一Docker Compose配置
+# ==========================================
+# 包含组件:
+#   - PostgreSQL (元数据库)
+#   - Milvus (向量数据库 + 全文搜索)
+#   - Attu (Milvus可视化界面)
+#
+# 使用方法:
+#   启动: docker compose up -d
+#   停止: docker compose down
+#   查看日志: docker compose logs -f
+#   查看状态: docker compose ps
+# ==========================================
+
+networks:
+  nl2sql-net:
+    driver: bridge
+    name: nl2sql-network
+    ipam:
+      driver: default
+      config:
+        - subnet: 192.168.234.0/24
+          gateway: 192.168.234.1
+
+services:
+  # ==========================================
+  # Redis - 缓存和分布式锁（自动同步系统）
+  # ==========================================
+  redis:
+    container_name: nl2sql-redis
+    image: redis:7.4-alpine
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6380:6379"
+    volumes:
+      - ./data/redis:/data
+    environment:
+      TZ: Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - nl2sql-net
+    restart: unless-stopped
+
+  # ==========================================
+  # PostgreSQL - 元数据库（语义模型配置存储）
+  # ==========================================
+  postgres:
+    container_name: nl2sql-postgres
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: text2sql_user
+      POSTGRES_PASSWORD: text2sql_secure_password_2024
+      POSTGRES_DB: text2sql_metadata
+      PGDATA: /var/lib/postgresql/data/pg17data
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro
+    networks:
+      - nl2sql-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U text2sql_user -d text2sql_metadata"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ==========================================
+  # etcd - Milvus元数据存储
+  # ==========================================
+  etcd:
+    container_name: milvus-etcd
+    image: quay.io/coreos/etcd:v3.5.17
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - ./data/etcd:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - nl2sql-net
+    restart: unless-stopped
+
+  # ==========================================
+  # MinIO - Milvus对象存储
+  # ==========================================
+  minio:
+    container_name: milvus-minio
+    image: minio/minio:RELEASE.2025-07-18T21-56-31Z
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9011:9001"    # MinIO Console
+      - "9010:9000"    # MinIO API
+    volumes:
+      - ./data/minio:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - nl2sql-net
+    restart: unless-stopped
+
+  # ==========================================
+  # Milvus - 向量数据库（支持向量搜索 + 全文搜索）
+  # ==========================================
+  milvus:
+    container_name: milvus-standalone
+    image: milvusdb/milvus:v2.5.4
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      # etcd配置
+      ETCD_ENDPOINTS: etcd:2379
+      ETCD_USE_EMBED: "false"
+      # MinIO配置
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: minioadmin
+      MINIO_SECRET_ACCESS_KEY: minioadmin
+      MINIO_USE_SSL: "false"
+      # 性能配置
+      COMMON_STORAGETYPE: minio
+      # 日志配置
+      LOG_LEVEL: info
+      # 新版推荐配置
+      COMMON_SECURITY_AUTHORIZATIONENABLED: "false"
+    volumes:
+      - ./data/milvus:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      - "19530:19530"  # gRPC端口（主要）
+      - "9091:9091"    # Metrics端口
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - nl2sql-net
+    restart: unless-stopped
+
+  # ==========================================
+  # Attu - Milvus可视化管理界面
+  # ==========================================
+  attu:
+    container_name: milvus-attu
+    image: zilliz/attu:v2.5
+    environment:
+      MILVUS_URL: milvus:19530
+    ports:
+      - "8001:3000"    # 访问 http://localhost:8001
+    depends_on:
+      milvus:
+        condition: service_healthy
+    networks:
+      - nl2sql-net
+    restart: unless-stopped
+
+
+# ==========================================
+# 数据存储说明
+# ==========================================
+# 所有数据统一存储在 ./data/ 目录下：
+#   - ./data/redis/          Redis缓存和分布式锁数据
+#   - ./data/postgres/       PostgreSQL数据
+#   - ./data/etcd/           Milvus元数据
+#   - ./data/minio/          Milvus对象存储
+#   - ./data/milvus/         Milvus向量数据
+#
+# 备份命令：
+#   tar -czf backup-$(date +%Y%m%d).tar.gz data/
+#
+# 恢复命令：
+#   tar -xzf backup-YYYYMMDD.tar.gz
+# ==========================================
+

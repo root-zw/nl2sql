@@ -1,0 +1,73 @@
+# Python >= 3.11
+
+# Web 框架
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-multipart>=0.0.6
+typing_extensions>=4.8.0  # 兼容pydantic与最新类型提示
+orjson>=3.9.0  # FastAPI ORJSONResponse 依赖
+
+# 数据库
+sqlalchemy>=2.0.25
+pyodbc>=5.0.1
+alembic>=1.13.0
+asyncpg>=0.29.0  # PostgreSQL异步驱动（已使用）
+aioodbc>=0.5.0  # SQL Server异步驱动（新增）
+aiomysql>=0.2.0  # MySQL异步驱动（新增）
+
+# SQL 解析与生成
+sqlglot>=20.9.0
+
+# LLM 客户端
+openai>=1.10.0
+httpx>=0.26.0
+
+# 缓存与异步
+redis>=5.0.1
+hiredis>=2.3.2
+
+# 配置与校验
+pyyaml>=6.0.1
+jsonschema>=4.20.0
+python-dotenv>=1.0.0
+
+# 认证与安全
+python-jose[cryptography]>=3.3.0  # JWT token生成和验证
+passlib[bcrypt]>=1.7.4  # 密码加密
+bcrypt>=4.0.0  # 密码哈希
+cryptography>=41.0.0  # 连接串/凭据加密
+PyJWT>=2.8.0  # JWT编解码辅助
+ldap3>=2.9.1  # LDAP 客户端
+pycryptodome>=3.20.0  # AES/SM4 加密（外部 Token 认证）
+
+# 日志与监控
+structlog>=24.1.0
+
+# 工具库
+python-dateutil>=2.8.2
+openpyxl>=3.1.0  # Excel导入导出
+pytz>=2024.1
+tenacity>=8.2.3
+
+# 向量检索与全文搜索（Milvus 2.5+ Hybrid）
+pymilvus==2.5.4  # 与 Milvus 2.5.4 对齐，支持 BM25 Function / SparseVector
+jieba>=0.42.1
+rapidfuzz>=3.7.0  # 备用关键词匹配
+pypinyin>=0.50.0  # 中文转拼音（用户名转换）
+scipy>=1.11.0  # pymilvus 稀疏索引依赖
+numpy>=1.26.0  # DualVector 枚举检索依赖
+Pillow>=10.3.0
+
+# 开发工具（可选）
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+# 参数调优（可选）
+optuna>=3.6.0
+# pytest-cov>=4.1.0
+# black>=24.1.0
+# ruff>=0.1.0
+# mypy>=1.8.0
+
+email-validator>=2.1.0

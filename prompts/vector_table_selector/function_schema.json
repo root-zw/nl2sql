@@ -1,0 +1,222 @@
+{
+  "type": "function",
+  "function": {
+    "name": "select_and_generate_ir",
+    "description": "从向量检索召回的候选表中选择最相关的表，并直接生成结构化的中间表示(IR)。table_id和field_id必须精确复制UUID。",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "selected_table_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "description": "选中的主表ID，必须精确复制候选表中的UUID（格式：8-4-4-4-12，共36字符）"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "整体置信度(0-1)，综合考虑表选择准确性和IR生成质量"
+        },
+        "selection_reason": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "选择该表并生成该IR的理由（不超过100字）"
+        },
+        "alternative_table_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          },
+          "description": "备选表ID列表（当存在其他可能相关的表时提供）"
+        },
+        "is_multi_table_query": {
+          "type": "boolean",
+          "description": "是否需要多表查询（跨年对比、多表合并、跨表关联等）"
+        },
+        "multi_table_mode": {
+          "type": "string",
+          "enum": ["single", "cross_year", "cross_partition", "multi_join"],
+          "description": "查询模式：single=单表, cross_year=跨年对比, cross_partition=跨分区合并, multi_join=跨表关联查询（用户明确要求查询多个不同业务表的交集或关联数据）"
+        },
+        "multi_table_hint": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "多表查询时给用户的提示信息"
+        },
+        "ir": {
+          "type": "object",
+          "description": "生成的中间表示(IR)",
+          "properties": {
+            "query_type": {
+              "type": "string",
+              "enum": ["aggregation", "detail", "duplicate_detection", "window_detail"],
+              "description": "查询类型"
+            },
+            "metrics": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "度量字段field_id列表，或 __row_count__ 表示记录数，或 derived:名称 表示派生指标"
+            },
+            "dimensions": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "维度字段field_id列表"
+            },
+            "filters": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "field": {"type": "string", "description": "字段field_id"},
+                  "op": {
+                    "type": "string",
+                    "enum": ["=", "!=", ">", ">=", "<", "<=", "IN", "NOT IN", "LIKE", "IS NULL", "IS NOT NULL", "ST_INTERSECTS"]
+                  },
+                  "value": {"description": "过滤值"}
+                },
+                "required": ["field", "op"]
+              },
+              "description": "WHERE过滤条件"
+            },
+            "having_filters": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "field": {"type": "string", "description": "聚合指标field_id或派生指标（如 derived:每亩单价）"},
+                  "op": {"type": "string", "enum": ["=", "!=", ">", ">=", "<", "<="]},
+                  "value": {"description": "数值（需按指标定义的单位填写）"}
+                },
+                "required": ["field", "op", "value"]
+              },
+              "description": "HAVING过滤条件（聚合后），用于对聚合结果或派生指标进行过滤"
+            },
+            "conditional_metrics": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "field": {"type": "string"},
+                  "condition": {
+                    "type": "object",
+                    "properties": {
+                      "field": {"type": "string"},
+                      "op": {"type": "string"},
+                      "value": {}
+                    },
+                    "required": ["field", "op", "value"]
+                  },
+                  "aggregation": {"type": "string", "enum": ["SUM", "COUNT", "AVG", "MIN", "MAX"]},
+                  "alias": {"type": "string"},
+                  "else_value": {"default": 0}
+                },
+                "required": ["field", "condition", "alias"]
+              },
+              "description": "条件聚合"
+            },
+            "ratio_metrics": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "numerator_field": {"type": "string"},
+                  "numerator_condition": {"type": "object"},
+                  "denominator_field": {"type": "string"},
+                  "denominator_condition": {"type": "object"},
+                  "alias": {"type": "string"},
+                  "as_percentage": {"type": "boolean", "default": true},
+                  "decimal_places": {"type": "integer", "default": 2}
+                },
+                "required": ["numerator_field", "alias"]
+              },
+              "description": "占比计算"
+            },
+            "calculated_fields": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "expression": {"type": "string"},
+                  "alias": {"type": "string"},
+                  "field_refs": {"type": "array", "items": {"type": "string"}},
+                  "aggregation": {
+                    "type": "string",
+                    "enum": ["AVG", "SUM", "MAX", "MIN", "NONE"],
+                    "description": "聚合查询中对表达式应用的聚合函数"
+                  }
+                },
+                "required": ["expression", "alias"]
+              },
+              "description": "计算字段"
+            },
+            "time": {
+              "type": "object",
+              "properties": {
+                "type": {"type": "string", "enum": ["absolute", "relative", "rolling"], "description": "absolute=明确日期, relative=相对时间, rolling=周期至今"},
+                "start_date": {"type": "string", "format": "date"},
+                "end_date": {"type": "string", "format": "date"},
+                "last_n": {"type": "integer", "description": "相对时间数量，如近6年填6"},
+                "unit": {"type": "string", "enum": ["day", "week", "month", "quarter", "year"], "description": "year时优先使用年份字段"}
+              },
+              "description": "时间范围。unit=year时系统优先使用年份维度字段过滤"
+            },
+            "time_grain": {
+              "type": "string",
+              "enum": ["day", "week", "month", "quarter", "year"],
+              "description": "时间粒度"
+            },
+            "sort_by": {
+              "type": "string",
+              "description": "排序字段field_id"
+            },
+            "sort_order": {
+              "type": "string",
+              "enum": ["asc", "desc"],
+              "description": "排序方向"
+            },
+            "limit": {
+              "type": "integer",
+              "description": "返回记录数限制"
+            },
+            "with_total": {
+              "type": "boolean",
+              "description": "是否追加汇总行"
+            },
+            "partition_by": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "窗口分区字段"
+            },
+            "window_limit": {
+              "type": "integer",
+              "description": "窗口内记录数限制"
+            },
+            "duplicate_by": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "判断重复的字段"
+            },
+            "cross_partition_query": {
+              "type": "boolean",
+              "description": "是否跨分区查询"
+            },
+            "cross_partition_mode": {
+              "type": "string",
+              "enum": ["union", "compare"],
+              "description": "跨分区模式"
+            },
+            "ambiguities": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "不确定或有歧义的地方"
+            }
+          },
+          "required": ["query_type"]
+        }
+      },
+      "required": ["selected_table_id", "confidence", "selection_reason", "is_multi_table_query", "multi_table_mode", "ir"]
+    }
+  }
+}
+
