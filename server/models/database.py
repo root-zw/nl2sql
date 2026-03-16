@@ -27,6 +27,7 @@ class DatabaseType(str, Enum):
     """数据库类型"""
     SQLSERVER = "sqlserver"
     MYSQL = "mysql"
+    MARIADB = "mariadb"
     POSTGRESQL = "postgresql"
 
 

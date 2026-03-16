@@ -12,6 +12,7 @@ from pathlib import Path
 import structlog
 
 from server.config import settings
+from server.compiler.dialect_profiles import get_dialect_profile
 from server.utils.prompt_loader import resolve_path, load_text
 
 logger = structlog.get_logger()
@@ -109,7 +110,8 @@ class DirectSQLGenerator:
             default_limit: 默认结果限制
         """
         self.llm_client = llm_client
-        self.dialect = dialect
+        self.profile = get_dialect_profile(dialect)
+        self.dialect = self.profile.sqlglot_dialect
         self.default_limit = default_limit
     
     async def generate(
@@ -135,6 +137,12 @@ class DirectSQLGenerator:
                 dialect=self._dialect_display_name(),
                 table_schema=table_schema
             )
+            if self.profile.is_mysql_family:
+                system_prompt += (
+                    "\n- 禁止使用 FULL OUTER JOIN，需改写为 LEFT/RIGHT JOIN + UNION ALL 等价形式"
+                    "\n- 禁止使用 GROUPING()，汇总行请用显式 UNION ALL 生成"
+                    "\n- 优先使用 WITH ROLLUP 或显式总计子查询，不要输出 SQL Server 专属语法"
+                )
             
             context_str = ""
             if context:
@@ -260,15 +268,7 @@ class DirectSQLGenerator:
     
     def _dialect_display_name(self) -> str:
         """获取方言的显示名称"""
-        mapping = {
-            "tsql": "SQL Server (T-SQL)",
-            "mysql": "MySQL",
-            "postgresql": "PostgreSQL",
-            "postgres": "PostgreSQL",
-            "sqlite": "SQLite",
-            "oracle": "Oracle",
-        }
-        return mapping.get(self.dialect, self.dialect.upper())
+        return self.profile.display_name
     
     @classmethod
     def build_table_schema_from_model(cls, model, connection_id: str = None) -> str:

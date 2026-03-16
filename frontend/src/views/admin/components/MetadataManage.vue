@@ -2286,6 +2286,7 @@ function getDbIcon(type) {
   const icons = {
     sqlserver: '🗄️',
     mysql: '🐬',
+    mariadb: '🦭',
     postgresql: '🐘'
   }
   return icons[type] || '💾'

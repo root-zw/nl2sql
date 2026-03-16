@@ -14,6 +14,7 @@ from server.models.semantic import SemanticModel, Join
 from server.exceptions import CompilationError
 from server.utils.timezone_helper import now_with_tz, now_utc, get_datetime_with_delta
 from server.compiler.synonym_resolver import SynonymResolver
+from server.compiler.dialect_profiles import get_dialect_profile
 
 logger = structlog.get_logger()
 
@@ -21,9 +22,17 @@ logger = structlog.get_logger()
 class ASTBuilder:
     """AST 构建器"""
 
-    def __init__(self, semantic_model: SemanticModel, dialect: str = "tsql", global_rules=None):
+    def __init__(
+        self,
+        semantic_model: SemanticModel,
+        dialect: str = "tsql",
+        global_rules=None,
+        db_type: Optional[str] = None,
+    ):
         self.model = semantic_model
-        self.dialect = dialect
+        self.profile = get_dialect_profile(db_type or dialect)
+        self.dialect = self.profile.compiler_dialect
+        self.db_type = self.profile.db_type
         # 构建期表别名缓存：table_id -> friendly alias（物理表名）
         self._alias_cache = {}
 
@@ -3034,7 +3043,7 @@ class ASTBuilder:
         where_conditions: List[exp.Expression]
     ) -> exp.Select:
         """
-        生成带汇总行的查询（使用ROLLUP优化，SQL Server 2012+）
+        生成带汇总行的查询。
 
         Args:
             detail_query: 原始的分组查询
@@ -3044,122 +3053,74 @@ class ASTBuilder:
             where_conditions: WHERE条件列表
 
         Returns:
-            使用ROLLUP的SELECT查询（一次扫描生成明细+汇总）
+            使用 UNION ALL 合并的查询（跨数据库兼容）
         """
-        # 1. 复制原查询，移除原有的ORDER BY和LIMIT（外层会统一处理）
-        rollup_query = detail_query.copy()
+        detail_part = detail_query.copy()
+        if detail_part.args.get("order"):
+            detail_part.set("order", None)
+        if detail_part.args.get("limit"):
+            detail_part.set("limit", None)
 
-        # 保留原有的排序配置，后续重新附加，避免用户指定的排序失效
-        original_order_exprs: List[exp.Expression] = []
-        original_order = rollup_query.args.get("order")
-        if original_order and hasattr(original_order, "expressions"):
-            original_order_exprs = [expr.copy() for expr in original_order.expressions]
-        if original_order:
-            rollup_query.set("order", None)
-        if rollup_query.args.get("limit"):
-            rollup_query.set("limit", None)
-        
-        # 2. 修改SELECT子句：为维度列添加CASE WHEN GROUPING(...) 逻辑
-        original_exprs = rollup_query.args.get("expressions", [])
-        new_select_exprs = []
-        
-        # 用于存储维度列的原始表达式（用于GROUPING函数）
-        dim_raw_exprs = {}
-        
-        for expr in original_exprs:
-            # 检查这个表达式是否是维度列
-            expr_alias = expr.alias if hasattr(expr, 'alias') and expr.alias else None
-            
-            is_dimension = False
-            dim_id = None
-            for dim in ir.dimensions:
-                if expr_alias == self._get_dimension_alias(dim):
-                    is_dimension = True
-                    dim_id = dim
-                    break
-            
-            if is_dimension and dim_id:
-                # 这是一个维度列，需要用CASE WHEN包装
-                # 先获取原始列表达式（去掉别名）
-                if hasattr(expr, 'this'):
-                    raw_expr = expr.this
-                else:
-                    raw_expr = expr
-                
-                dim_raw_exprs[dim_id] = raw_expr
-                
-                # 构建: CASE WHEN GROUPING(维度列) = 1 THEN '合计' ELSE 维度列 END AS 别名
-                grouping_func = exp.Anonymous(this="GROUPING", expressions=[raw_expr])
-                case_expr = exp.Case(
-                    ifs=[
-                        exp.If(
-                            this=exp.EQ(this=grouping_func, expression=exp.Literal.number(1)),
-                            true=exp.Literal.string('合计')
-                        )
-                    ],
-                    default=raw_expr
-                )
-                
-                new_select_exprs.append(case_expr.as_(expr_alias))
-                logger.debug(f"为维度 {dim_id} 添加GROUPING逻辑")
+        total_query = detail_part.copy()
+        total_select_exprs: List[exp.Expression] = []
+        dimension_aliases = {self._get_dimension_alias(dim_id) for dim_id in ir.dimensions}
+
+        for expr in total_query.args.get("expressions", []):
+            expr_alias = expr.alias if hasattr(expr, "alias") and expr.alias else None
+            if expr_alias in dimension_aliases:
+                total_select_exprs.append(exp.Literal.string("合计").as_(expr_alias))
             else:
-                # 不是维度列（指标列或其他），保持原样
-                new_select_exprs.append(expr)
-        
-        rollup_query.set("expressions", new_select_exprs)
-        
-        # 3. 修改GROUP BY子句：使用ROLLUP包装维度列
-        original_group = rollup_query.args.get("group")
-        if original_group and hasattr(original_group, 'expressions'):
-            group_exprs = original_group.expressions
-            
-            # 构建 ROLLUP(dim1, dim2, ...) 表达式
-            rollup_expr = exp.Rollup(expressions=group_exprs)
-            
-            # 创建新的GROUP BY子句
-            new_group = exp.Group(expressions=[rollup_expr])
-            rollup_query.set("group", new_group)
-            
-            logger.debug(f"已将GROUP BY改为ROLLUP，包含 {len(group_exprs)} 个维度")
-        else:
-            logger.warning("原查询没有GROUP BY子句，无法使用ROLLUP")
-        
-        # 4. 添加ORDER BY：优先保证汇总行在最后，再保留用户指定的排序
-        grouping_order_expr = None
-        dimension_order_exprs: List[exp.Expression] = []
-        
-        # 首先按第一个维度的GROUPING()排序（0=明细行，1=汇总行）
-        if ir.dimensions and ir.dimensions[0] in dim_raw_exprs:
-            first_dim_expr = dim_raw_exprs[ir.dimensions[0]]
-            grouping_order = exp.Anonymous(this="GROUPING", expressions=[first_dim_expr])
-            grouping_order_expr = exp.Ordered(this=grouping_order, desc=False)
-        
-        # 然后按维度列排序（让明细数据按维度有序）
-        # 注意：必须使用原始列表达式，不能使用别名（因为别名包含CASE WHEN GROUPING）
-        for dim_id in ir.dimensions:
-            if dim_id in dim_raw_exprs:
-                dimension_order_exprs.append(
-                    exp.Ordered(this=dim_raw_exprs[dim_id], desc=False)
+                total_select_exprs.append(expr)
+
+        total_query.set("expressions", total_select_exprs)
+        total_query.set("group", None)
+        total_query.set("order", None)
+        total_query.set("limit", None)
+
+        union_result = exp.Union(
+            this=detail_part,
+            expression=total_query,
+            distinct=False,
+        )
+
+        result_alias = "summary_result"
+        result_query = select("*").from_(
+            exp.Subquery(
+                this=union_result,
+                alias=exp.TableAlias(this=exp.to_identifier(result_alias)),
+            )
+        )
+
+        if ir.dimensions:
+            first_alias = self._get_dimension_alias(ir.dimensions[0])
+            order_exprs: List[exp.Expression] = [
+                exp.Ordered(
+                    this=exp.Case(
+                        ifs=[
+                            exp.If(
+                                this=exp.EQ(
+                                    this=exp.column(first_alias, table=result_alias),
+                                    expression=exp.Literal.string("合计"),
+                                ),
+                                true=exp.Literal.number(1),
+                            )
+                        ],
+                        default=exp.Literal.number(0),
+                    ),
+                    desc=False,
                 )
-            else:
-                logger.warning(f"维度 {dim_id} 未找到原始表达式，跳过排序")
-        
-        final_order_exprs: List[exp.Expression] = []
-        if grouping_order_expr:
-            final_order_exprs.append(grouping_order_expr)
+            ]
+            for dim_id in ir.dimensions:
+                order_exprs.append(
+                    exp.Ordered(
+                        this=exp.column(self._get_dimension_alias(dim_id), table=result_alias),
+                        desc=False,
+                    )
+                )
+            result_query = result_query.order_by(*order_exprs)
 
-        if original_order_exprs:
-            final_order_exprs.extend(original_order_exprs)
-            if dimension_order_exprs:
-                final_order_exprs.extend(dimension_order_exprs)
-        elif dimension_order_exprs:
-            final_order_exprs.extend(dimension_order_exprs)
-
-        if final_order_exprs:
-            rollup_query = rollup_query.order_by(*final_order_exprs)
-        
-        logger.debug("已生成带汇总行的ROLLUP查询（性能优化，一次扫描）")
-        return rollup_query
+        logger.debug("已生成带汇总行的 UNION ALL 查询")
+        return result_query
 
     def _build_union_query(
         self,
@@ -3746,11 +3707,15 @@ class ASTBuilder:
                     alias=exp.to_identifier(f"{metric_name}变化率(%)")
                 ))
         
-        # 构建主查询的 FROM 和 JOIN
-        main_query = select(*main_select_exprs).from_(
-            exp.Table(this=exp.to_identifier(current_cte_name), alias=exp.to_identifier(current_alias))
+        current_cte_table = exp.Table(
+            this=exp.to_identifier(current_cte_name),
+            alias=exp.to_identifier(current_alias),
         )
-        
+        base_cte_table = exp.Table(
+            this=exp.to_identifier(base_cte_name),
+            alias=exp.to_identifier(base_alias),
+        )
+
         # 构建 JOIN 条件（基于CTE中的分组列）
         join_condition = None
         for _, _, display_name in join_key_columns:
@@ -3762,36 +3727,81 @@ class ASTBuilder:
                 join_condition = cond
             else:
                 join_condition = exp.And(this=join_condition, expression=cond)
-        
+
+        def _build_main_select_query() -> exp.Select:
+            return select(*[expr.copy() for expr in main_select_exprs])
+
         if join_condition:
-            main_query = main_query.join(
-                exp.Table(this=exp.to_identifier(base_cte_name), alias=exp.to_identifier(base_alias)),
-                on=join_condition,
-                join_type="FULL OUTER"
-            )
+            if self.profile.supports_full_outer_join:
+                main_relation = _build_main_select_query().from_(current_cte_table.copy()).join(
+                    base_cte_table.copy(),
+                    on=join_condition.copy(),
+                    join_type="FULL OUTER",
+                )
+            else:
+                left_query = _build_main_select_query().from_(current_cte_table.copy()).join(
+                    base_cte_table.copy(),
+                    on=join_condition.copy(),
+                    join_type="LEFT",
+                )
+
+                right_only_query = _build_main_select_query().from_(base_cte_table.copy()).join(
+                    current_cte_table.copy(),
+                    on=join_condition.copy(),
+                    join_type="LEFT",
+                )
+
+                unmatched_condition = None
+                for _, _, display_name in join_key_columns:
+                    is_null_cond = exp.column(display_name, table=current_alias).is_(exp.Null())
+                    if unmatched_condition is None:
+                        unmatched_condition = is_null_cond
+                    else:
+                        unmatched_condition = exp.And(
+                            this=unmatched_condition,
+                            expression=is_null_cond,
+                        )
+
+                if unmatched_condition is not None:
+                    right_only_query = right_only_query.where(unmatched_condition)
+
+                main_relation = exp.Union(
+                    this=left_query,
+                    expression=right_only_query,
+                    distinct=False,
+                )
+                logger.debug(
+                    "当前方言不支持 FULL OUTER JOIN，已改写为 LEFT JOIN + UNION ALL",
+                    db_type=self.db_type,
+                )
         else:
-            main_query = main_query.join(
-                exp.Table(this=exp.to_identifier(base_cte_name), alias=exp.to_identifier(base_alias)),
-                join_type="CROSS"
+            main_relation = _build_main_select_query().from_(current_cte_table.copy()).join(
+                base_cte_table.copy(),
+                join_type="CROSS",
             )
-        
+
+        result_alias = "compare_result"
+        main_query = select("*").from_(
+            exp.Subquery(
+                this=main_relation,
+                alias=exp.TableAlias(this=exp.to_identifier(result_alias)),
+            )
+        )
+
         # 添加 ORDER BY
         if join_key_columns:
             order_exprs = []
             for _, _, display_name in join_key_columns:
                 order_exprs.append(exp.Ordered(
-                    this=exp.Coalesce(
-                        this=exp.column(display_name, table=current_alias),
-                        expressions=[exp.column(display_name, table=base_alias)]
-                    ),
+                    this=exp.column(display_name, table=result_alias),
                     desc=False
                 ))
             main_query = main_query.order_by(*order_exprs)
-        
+
         # 添加 LIMIT
         if ir.limit:
             main_query = main_query.limit(ir.limit)
-        
+
         # ========== 组装 WITH 子句 ==========
         # 使用 SQLGlot 的 with_ 方法正确构建 CTE
         main_query = main_query.with_(current_cte_name, as_=current_cte_query)

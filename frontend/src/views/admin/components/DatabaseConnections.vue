@@ -361,6 +361,7 @@ function getDbIcon(type) {
   const icons = {
     sqlserver: '🗄️',
     mysql: '🐬',
+    mariadb: '🦭',
     postgresql: '🐘'
   }
   return icons[type] || '💾'
@@ -371,6 +372,7 @@ function getDbTypeLabel(type) {
   const labels = {
     sqlserver: 'SQL Server',
     mysql: 'MySQL',
+    mariadb: 'MariaDB',
     postgresql: 'PostgreSQL'
   }
   return labels[type] || type
@@ -381,6 +383,7 @@ function getDbTypeColor(type) {
   const colors = {
     sqlserver: 'primary',
     mysql: 'warning',
+    mariadb: 'info',
     postgresql: 'success'
   }
   return colors[type] || ''

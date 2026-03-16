@@ -8,9 +8,10 @@ import asyncpg
 from sqlalchemy import create_engine, pool
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 import structlog
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
 
 from server.config import settings
+from server.compiler.dialect_profiles import get_dialect_profile
 from server.exec.connection import decrypt_password
 
 logger = structlog.get_logger()
@@ -141,6 +142,9 @@ class TargetDBPoolManager:
                          connection_id=connection_id,
                          error=str(e))
 
+        profile = get_dialect_profile(db_type)
+        db_type = profile.db_type
+
         # 构建连接字符串
         if db_type == "sqlserver":
             # 使用 FreeTDS 驱动（libtdsodbc.so）避免 SSL 兼容性问题
@@ -173,10 +177,14 @@ class TargetDBPoolManager:
             connection_string = (
                 f"mssql+aioodbc:///?odbc_connect={quoted_odbc_connect}"
             )
-        elif db_type == "mysql":
-            # MySQL: 使用 aiomysql
+        elif profile.is_mysql_family:
+            # MySQL/MariaDB: 使用 aiomysql
+            quoted_username = quote(username, safe="")
+            quoted_password = quote(password or "", safe="")
+            quoted_database = quote(database, safe="")
             connection_string = (
-                f"mysql+aiomysql://{username}:{password}@{host}:{port}/{database}"
+                f"mysql+aiomysql://{quoted_username}:{quoted_password}@{host}:{port}/{quoted_database}"
+                "?charset=utf8mb4"
             )
         elif db_type == "postgresql":
             # PostgreSQL: 使用 asyncpg

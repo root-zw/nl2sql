@@ -17,6 +17,7 @@ from server.config import settings
 from server.models.ir import IntermediateRepresentation
 from server.query_complexity.router import QueryRouter, RoutingDecision, get_query_router
 from server.compiler.sql_post_processor import SQLPostProcessor, SQLValidationResult
+from server.compiler.dialect_profiles import get_dialect_profile
 from server.nl2ir.direct_sql_generator import DirectSQLGenerator, DirectSQLResult
 
 logger = structlog.get_logger()
@@ -300,6 +301,8 @@ async def get_hybrid_query_service(
     Returns:
         HybridQueryService 实例
     """
+    profile = get_dialect_profile(dialect)
+
     # 创建路由器
     router = get_query_router(
         enable_complex_split=settings.enable_complex_query_auto_execution,
@@ -310,15 +313,15 @@ async def get_hybrid_query_service(
     post_processor = None
     if settings.sql_post_processor_enabled:
         if semantic_model:
-            post_processor = SQLPostProcessor.from_semantic_model(semantic_model, dialect)
+            post_processor = SQLPostProcessor.from_semantic_model(semantic_model, profile.db_type)
         else:
-            post_processor = SQLPostProcessor(dialect=dialect)
+            post_processor = SQLPostProcessor(dialect=profile.db_type)
     
     # 创建直接 SQL 生成器
     direct_sql_generator = None
     if settings.direct_sql_enabled:
         from server.nl2ir.direct_sql_generator import get_direct_sql_generator
-        direct_sql_generator = await get_direct_sql_generator(connection_id, dialect)
+        direct_sql_generator = await get_direct_sql_generator(connection_id, profile.db_type)
     
     return HybridQueryService(
         router=router,

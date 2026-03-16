@@ -13,6 +13,7 @@ const parseEnvNumber = (value, fallback) => {
 export const DB_TYPES = [
   { label: 'SQL Server', value: 'sqlserver', icon: '🗄️', color: '#CC2927' },
   { label: 'MySQL', value: 'mysql', icon: '🐬', color: '#00758F' },
+  { label: 'MariaDB', value: 'mariadb', icon: '🦭', color: '#003545' },
   { label: 'PostgreSQL', value: 'postgresql', icon: '🐘', color: '#336791' }
 ]
 

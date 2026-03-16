@@ -341,6 +341,14 @@ class SQLServerInspector(DatabaseInspector):
 
 class MySQLInspector(DatabaseInspector):
     """MySQL检查器"""
+
+    database_type = "mysql"
+
+    async def _get_version_string(self, conn) -> str:
+        async with conn.cursor() as cursor:
+            await cursor.execute("SELECT VERSION()")
+            row = await cursor.fetchone()
+            return row[0] if row else ""
     
     async def test_connection(self) -> Tuple[bool, str]:
         """测试连接"""
@@ -353,12 +361,12 @@ class MySQLInspector(DatabaseInspector):
                 db=self.database,
                 connect_timeout=settings.db_inspector_timeout
             )
-            async with conn.cursor() as cursor:
-                await cursor.execute("SELECT 1")
-                await cursor.fetchone()
+            version = await self._get_version_string(conn)
             conn.close()
             
-            return True, "连接成功"
+            product_name = "MariaDB" if "MariaDB" in version else self.database_type.upper()
+            version_suffix = f" ({version})" if version else ""
+            return True, f"连接成功: {product_name}{version_suffix}"
         except Exception as e:
             logger.error(f"MySQL连接失败: {e}")
             return False, f"连接失败: {str(e)}"
@@ -458,7 +466,7 @@ class MySQLInspector(DatabaseInspector):
             
             return DatabaseSchema(
                 database_name=self.database,
-                database_type="mysql",
+                database_type=self.database_type,
                 tables=tables,
                 total_tables=len(tables),
                 total_columns=total_columns
@@ -507,6 +515,12 @@ class MySQLInspector(DatabaseInspector):
         except Exception as e:
             logger.exception(f"MySQL采样枚举值失败")
             raise
+
+
+class MariaDBInspector(MySQLInspector):
+    """MariaDB检查器"""
+
+    database_type = "mariadb"
 
 
 class PostgreSQLInspector(DatabaseInspector):
@@ -705,6 +719,8 @@ def get_inspector(
         return SQLServerInspector(host, port, database, username, password)
     elif db_type.lower() == "mysql":
         return MySQLInspector(host, port, database, username, password)
+    elif db_type.lower() == "mariadb":
+        return MariaDBInspector(host, port, database, username, password)
     elif db_type.lower() == "postgresql":
         return PostgreSQLInspector(host, port, database, username, password)
     else:

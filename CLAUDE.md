@@ -8,10 +8,10 @@ NL2SQL (Natural Language to SQL) is a system that converts natural language ques
 
 ## Build and Development Commands
 
-### Backend (Python 3.11+, Conda env: `text2sql`)
+### Backend (Python 3.11+, Conda env: `nl2sql`)
 ```bash
 # Activate environment
-conda activate text2sql
+conda activate nl2sql
 
 # Install dependencies
 pip install -r requirements.txt
@@ -86,7 +86,7 @@ Controlled by `HYBRID_ARCHITECTURE_ENABLED` and `DIRECT_SQL_ENABLED`:
 - Python: `snake_case` for functions/variables, `PascalCase` for classes, type hints encouraged
 - Frontend: Vue SFC in `PascalCase.vue`, utilities in `camelCase`
 - All code must be executable (no pseudocode)
-- Conda environment `text2sql` required for all Python operations
+- Conda environment `nl2sql` required for all Python operations
 - Only write `is_active=true` fields to Milvus (human-curated active fields)
 
 ## Commit Style

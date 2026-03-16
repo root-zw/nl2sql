@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from server.models.api import QueryResult
 from server.config import settings
+from server.compiler.dialect_profiles import get_dialect_profile
 from server.exceptions import ExecutionError, SecurityError
 from server.security.sql_validator import validate_sql_security
 
@@ -46,6 +47,8 @@ class QueryExecutor:
         self.database = database
         self.username = username
         self.password = password
+        self.profile = get_dialect_profile(db_type)
+        self.db_type = self.profile.db_type
         self._engine: Optional[AsyncEngine] = None
     
     async def _get_engine(self) -> AsyncEngine:
@@ -102,7 +105,7 @@ class QueryExecutor:
         # MySQL 方言兜底后处理：
         # - 直接 SQL 流程/其他路径可能生成 `GROUP BY ROLLUP (...)`，但 MySQL 需要 `GROUP BY ... WITH ROLLUP`
         # - 这里在“最终执行前”统一修正，避免方言差异导致执行失败
-        if self.db_type == "mysql" and sql:
+        if self.profile.is_mysql_family and sql:
             try:
                 from server.compiler.dialect_mysql import MySQLDialect
                 sql = MySQLDialect().add_unicode_prefix(sql)
@@ -135,6 +138,8 @@ class QueryExecutor:
                 await conn.execute(text(f"SET statement_timeout = {timeout * 1000}"))
             elif self.db_type == "mysql":
                 await conn.execute(text(f"SET SESSION max_execution_time = {timeout * 1000}"))
+            elif self.db_type == "mariadb":
+                await conn.execute(text(f"SET SESSION max_statement_time = {timeout}"))
 
             # 执行查询
             result = await conn.execute(text(sql))
@@ -223,6 +228,40 @@ class QueryExecutor:
         Returns:
             类型字符串: "string", "number", "boolean", "date"
         """
+        if isinstance(db_type, int):
+            try:
+                from pymysql.constants import FIELD_TYPE
+
+                number_types = {
+                    FIELD_TYPE.DECIMAL,
+                    FIELD_TYPE.TINY,
+                    FIELD_TYPE.SHORT,
+                    FIELD_TYPE.LONG,
+                    FIELD_TYPE.FLOAT,
+                    FIELD_TYPE.DOUBLE,
+                    FIELD_TYPE.LONGLONG,
+                    FIELD_TYPE.INT24,
+                    FIELD_TYPE.NEWDECIMAL,
+                    FIELD_TYPE.YEAR,
+                }
+                date_types = {
+                    FIELD_TYPE.DATE,
+                    FIELD_TYPE.TIME,
+                    FIELD_TYPE.DATETIME,
+                    FIELD_TYPE.TIMESTAMP,
+                    FIELD_TYPE.NEWDATE,
+                }
+                boolean_types = {FIELD_TYPE.BIT}
+
+                if db_type in number_types:
+                    return "number"
+                if db_type in date_types:
+                    return "date"
+                if db_type in boolean_types:
+                    return "boolean"
+            except Exception:
+                pass
+
         type_name = str(db_type).upper()
         
         if "INT" in type_name or "DECIMAL" in type_name or "FLOAT" in type_name or "NUMERIC" in type_name:

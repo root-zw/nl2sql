@@ -12,6 +12,7 @@ from server.config import settings
 from server.nl2ir.llm_client import LLMClient
 from server.metadata.db_manager import MetadataManager
 from server.compiler.compiler import SQLCompiler
+from server.compiler.dialect_profiles import get_dialect_profile
 from server.nl2ir.domain_detector import DomainDetector
 from server.utils.global_rules_loader import GlobalRulesLoader
 
@@ -283,25 +284,26 @@ async def create_sql_compiler(connection_id: str) -> SQLCompiler:
             connection_id
         )
 
-    dialect = row['db_type'] if row else 'postgres'
+    profile = get_dialect_profile(row["db_type"] if row else "postgresql")
 
-    # 方言映射
-    dialect_map = {
-        'postgres': 'postgres',
-        'mysql': 'mysql',
-        'sqlserver': 'tsql',
-        'oracle': 'oracle',
-        'sqlite': 'sqlite'
-    }
-
-    mapped_dialect = dialect_map.get(dialect, 'postgres')
-
-    logger.debug(f"创建SQL编译器: connection_id={connection_id}, dialect={mapped_dialect}")
+    logger.debug(
+        "创建SQL编译器",
+        connection_id=connection_id,
+        db_type=profile.db_type,
+        dialect=profile.compiler_dialect,
+        dialect_display=profile.display_name,
+    )
 
     # 全局规则加载器（用于派生指标等）
     global_rules_loader = get_global_rules_loader(connection_id)
 
-    return SQLCompiler(model, graph, dialect=mapped_dialect, global_rules_loader=global_rules_loader)
+    return SQLCompiler(
+        model,
+        graph,
+        dialect=profile.compiler_dialect,
+        db_type=profile.db_type,
+        global_rules_loader=global_rules_loader,
+    )
 
 
 _query_cache = None

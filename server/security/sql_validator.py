@@ -245,6 +245,7 @@ class SQLSecurityValidator:
         dialect_mapping = {
             'sqlserver': Dialects.SQLSERVER,
             'mysql': Dialects.MYSQL,
+            'mariadb': Dialects.MYSQL,
             'postgresql': Dialects.POSTGRES,
             'postgres': Dialects.POSTGRES,
             'sqlite': Dialects.SQLITE,

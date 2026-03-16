@@ -67,6 +67,8 @@ class DatabaseConnectionManager:
             ("postgresql://", "postgresql+asyncpg://"),
             ("mysql+pymysql://", "mysql+aiomysql://"),
             ("mysql://", "mysql+aiomysql://"),
+            ("mariadb+pymysql://", "mysql+aiomysql://"),
+            ("mariadb://", "mysql+aiomysql://"),
             ("sqlite+pysqlite://", "sqlite+aiosqlite://"),
             ("sqlite://", "sqlite+aiosqlite://"),
         ]

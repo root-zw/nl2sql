@@ -24,6 +24,7 @@
         <el-select v-model="form.db_type" style="width: 100%">
           <el-option label="SQL Server" value="sqlserver" />
           <el-option label="MySQL" value="mysql" />
+          <el-option label="MariaDB" value="mariadb" />
           <el-option label="PostgreSQL" value="postgresql" />
         </el-select>
       </el-form-item>
@@ -103,6 +104,7 @@ const DEFAULT_DB_PORT = Number(import.meta.env.VITE_DEFAULT_DB_PORT ?? 1433)
 const DEFAULT_PORTS = {
   sqlserver: 1433,
   mysql: 3306,
+  mariadb: 3306,
   postgresql: 5432
 }
 

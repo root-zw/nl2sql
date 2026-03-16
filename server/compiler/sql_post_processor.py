@@ -13,6 +13,7 @@ from sqlglot.errors import ParseError
 from dataclasses import dataclass, field
 
 from server.exceptions import SecurityError, CompilationError
+from server.compiler.dialect_profiles import get_dialect_profile
 
 logger = structlog.get_logger()
 
@@ -75,7 +76,9 @@ class SQLPostProcessor:
             default_limit: 默认结果限制
             max_limit: 最大结果限制
         """
-        self.dialect = dialect
+        self.profile = get_dialect_profile(dialect)
+        self.dialect = self.profile.sqlglot_dialect
+        self.db_type = self.profile.db_type
         self.allowed_tables = allowed_tables or {}
         self.allowed_columns = allowed_columns or {}
         self.default_limit = default_limit
@@ -116,6 +119,10 @@ class SQLPostProcessor:
             except ParseError as e:
                 result.is_valid = False
                 result.errors.append(f"SQL 解析失败: {str(e)}")
+                return result
+
+            self._validate_dialect_compatibility(ast, result)
+            if not result.is_valid:
                 return result
             
             # 3. 提取使用的表和列
@@ -169,18 +176,55 @@ class SQLPostProcessor:
         if not sql:
             return sql
         try:
-            if self.dialect == "mysql":
+            if self.profile.is_mysql_family:
                 from server.compiler.dialect_mysql import MySQLDialect
                 return MySQLDialect().add_unicode_prefix(sql)
-            if self.dialect in ("tsql", "mssql", "sqlserver"):
+            if self.db_type == "sqlserver":
                 from server.compiler.dialect_tsql import TSQLDialect
                 return TSQLDialect().add_unicode_prefix(sql)
-            if self.dialect in ("postgres", "postgresql"):
+            if self.db_type == "postgresql":
                 from server.compiler.dialect_postgres import PostgreSQLDialect
                 return PostgreSQLDialect().add_unicode_prefix(sql)
         except Exception as e:
-            logger.warning("SQL 方言后处理失败（已忽略）", error=str(e), dialect=self.dialect)
+            logger.warning("SQL 方言后处理失败（已忽略）", error=str(e), dialect=self.db_type)
         return sql
+
+    def _validate_dialect_compatibility(
+        self,
+        ast: exp.Expression,
+        result: SQLValidationResult,
+    ) -> None:
+        """Validate syntax that cannot run on the current dialect family."""
+
+        if self.profile.supports_full_outer_join:
+            return
+
+        for join in ast.find_all(exp.Join):
+            join_kind = str(join.args.get("kind") or "").upper()
+            join_side = str(join.args.get("side") or "").upper()
+            if join_kind == "OUTER" and join_side == "FULL":
+                logger.warning(
+                    "检测到当前方言不支持的 FULL OUTER JOIN",
+                    dialect=self.db_type,
+                )
+                result.is_valid = False
+                result.errors.append(
+                    f"{self.profile.display_name} 不支持 FULL OUTER JOIN，请改写为 LEFT/RIGHT JOIN + UNION ALL"
+                )
+                return
+
+        if not self.profile.supports_grouping_function:
+            for node in ast.find_all(exp.Anonymous):
+                if str(node.name).upper() == "GROUPING":
+                    logger.warning(
+                        "检测到当前方言不支持的 GROUPING()",
+                        dialect=self.db_type,
+                    )
+                    result.is_valid = False
+                    result.errors.append(
+                        f"{self.profile.display_name} 不支持 GROUPING()，请改为显式 UNION ALL 汇总行"
+                    )
+                    return
     
     def _check_dangerous_operations(self, sql: str, result: SQLValidationResult) -> None:
         """检查危险操作"""

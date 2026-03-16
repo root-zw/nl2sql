@@ -9,6 +9,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncTransaction
 from sqlalchemy import text
 
+from server.compiler.dialect_profiles import get_dialect_profile
 from server.utils.db_pool import get_target_pool_manager
 
 logger = structlog.get_logger()
@@ -33,14 +34,23 @@ class DatabaseSessionManager:
     async def _setup_snapshot(self, conn: AsyncConnection, db_type: str) -> Optional[AsyncTransaction]:
         """设置快照隔离级别并返回事务对象"""
         transaction: Optional[AsyncTransaction] = None
+        profile = get_dialect_profile(db_type)
+        db_type = profile.db_type
         try:
             if db_type == "postgresql":
                 transaction = await conn.begin()
                 await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
             
-            elif db_type == "mysql":
-                await conn.execute(text("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
-                await conn.execute(text("SET SESSION TRANSACTION READ ONLY"))
+            elif profile.is_mysql_family:
+                session_conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+                await session_conn.execute(text("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+                if profile.supports_read_only_transaction:
+                    try:
+                        await session_conn.execute(text("SET SESSION TRANSACTION READ ONLY"))
+                    except Exception as e:
+                        logger.warning("设置只读事务失败，继续使用可重复读事务", db_type=db_type, error=str(e))
+                if conn.in_transaction():
+                    await conn.rollback()
                 transaction = await conn.begin()
                 
             elif db_type == "sqlserver":

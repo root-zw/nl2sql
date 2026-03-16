@@ -950,8 +950,8 @@ git clone <repository-url>
 cd text2sql
 
 # 创建conda环境
-conda create -n text2sql python=3.11
-conda activate text2sql
+conda create -n nl2sql python=3.11
+conda activate nl2sql
 
 # 安装依赖
 pip install -r requirements.txt
@@ -985,7 +985,7 @@ psql -h localhost -U text2sql_user -d text2sql_metadata -f docker/init-scripts/i
 ### 5. 启动后端服务
 
 ```bash
-conda activate text2sql
+conda activate nl2sql
 uvicorn server.main:app --host 0.0.0.0 --port 8890 --reload
 ```
 

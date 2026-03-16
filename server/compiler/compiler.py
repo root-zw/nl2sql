@@ -11,6 +11,7 @@ from server.models.semantic import SemanticModel, Join
 from server.metadata.semantic_graph import SemanticGraph
 from server.compiler.planner import JoinPlanner
 from server.compiler.ast_builder import ASTBuilder
+from server.compiler.dialect_profiles import get_dialect_profile, normalize_db_type
 from server.compiler.rules import RulesEngine
 from server.compiler.dialect_tsql import TSQLDialect
 from server.compiler.dialect_mysql import MySQLDialect
@@ -34,13 +35,14 @@ class SQLCompiler:
     ):
         self.model = semantic_model
         self.graph = semantic_graph
-        self.dialect = dialect
-        self.db_type = db_type
+        self.profile = get_dialect_profile(db_type or dialect)
+        self.dialect = self.profile.compiler_dialect
+        self.db_type = self.profile.db_type
 
         # 子模块
         self.planner = JoinPlanner(semantic_model, semantic_graph)
-        self.ast_builder = ASTBuilder(semantic_model, dialect, [])
-        self.rules_engine = RulesEngine(semantic_model, dialect, global_rules_loader)
+        self.ast_builder = ASTBuilder(semantic_model, self.dialect, [], db_type=self.db_type)
+        self.rules_engine = RulesEngine(semantic_model, self.dialect, global_rules_loader)
 
         # 根据数据库类型选择方言处理器
         self.dialect_handler = self._get_dialect_handler(db_type)
@@ -55,9 +57,11 @@ class SQLCompiler:
         Returns:
             对应的方言处理器实例
         """
+        db_type = normalize_db_type(db_type)
         handlers = {
             "sqlserver": TSQLDialect,
             "mysql": MySQLDialect,
+            "mariadb": MySQLDialect,
             "postgresql": PostgreSQLDialect
         }
 
@@ -275,8 +279,8 @@ class SQLCompiler:
 
             if self.db_type == "sqlserver":
                 logger.debug("已应用 SQL Server 特定处理（中文字符串 N 前缀）")
-            elif self.db_type == "mysql":
-                logger.debug("已应用 MySQL 特定处理")
+            elif self.profile.is_mysql_family:
+                logger.debug("已应用 MySQL/MariaDB 特定处理", db_type=self.db_type)
             elif self.db_type == "postgresql":
                 logger.debug("已应用 PostgreSQL 特定处理")
 

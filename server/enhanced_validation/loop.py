@@ -8,6 +8,7 @@ import structlog
 from sqlalchemy import text
 
 from server.config import settings
+from server.compiler.dialect_profiles import get_dialect_profile
 from server.models.ir import IntermediateRepresentation
 
 logger = structlog.get_logger()
@@ -73,7 +74,8 @@ class ExecutionValidator:
 
     def _build_explain_sql(self, db_type: str, sql: str) -> str:
         sql_clean = sql.rstrip(" ;")
-        if db_type == "mysql":
+        profile = get_dialect_profile(db_type)
+        if profile.is_mysql_family:
             return f"EXPLAIN {sql_clean}"
         # PostgreSQL 以及默认走 EXPLAIN
         return f"EXPLAIN {sql_clean}"
