@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, ORJSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -64,7 +64,7 @@ def build_frontend_response(
         return FileResponse(index_file)
 
     if not path.strip("/") and fallback_payload is not None:
-        return ORJSONResponse(fallback_payload)
+        return JSONResponse(fallback_payload)
 
     raise HTTPException(status_code=404, detail="Frontend assets not built")
 
