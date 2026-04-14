@@ -16,16 +16,14 @@
 - `tests/`: 当前测试目录。现状是 `tests/conftest.py` 加若干按功能拆分的 `tests/test_<feature>.py` 文件。
 
 ## Environment And Commands
-- Python 开发的默认约定环境名记录为 conda 环境 `nl2sql`。这是用户明确要求保留的环境名信息。
-- 但必须先以当前机器实际配置为准。当前机器已核实可用的新增环境是 `nl2sql-py312`，路径为 `/home/zhangwei/miniconda3/envs/nl2sql-py312`，版本为 `Python 3.12.13`。
-- 当前机器未发现 `/home/zhangwei/miniconda3/envs/nl2sql`；因此在本机执行后端初始化、迁移、测试、启动等命令前，必须先核对目标环境是否实际存在。
-- 若后续本机重新创建了 `nl2sql`，则默认命令仍应优先写成 `conda activate nl2sql` 或 `conda run -n nl2sql ...`；若未创建，则应改用当前机器已验证可用的环境执行。
+- 当前机器上的 Python 开发默认环境是 conda 环境 `nl2sql-py312`。
+- 已核实当前机器存在该环境：`/home/zhangwei/miniconda3/envs/nl2sql-py312`，版本为 `Python 3.12.13`。
+- 执行后端初始化、迁移、测试、启动等命令时，默认先执行 `conda activate nl2sql-py312`，或直接使用 `conda run -n nl2sql-py312 ...`。
+- 若后续实际运行环境与此不一致，必须先以当前机器实际配置为准完成核对，再执行命令。
 - 后端常用命令优先写成：
-  - `conda run -n nl2sql pip install -r requirements.txt`
-  - `conda run -n nl2sql uvicorn server.main:app --reload --host 0.0.0.0 --port 8000`
-  - `conda run -n nl2sql pytest -q`
-- 当前机器上若需要直接使用已验证可用的 Python 3.12 环境，可使用：
-  - `conda run -n nl2sql-py312 python --version`
+  - `conda run -n nl2sql-py312 pip install -r requirements.txt`
+  - `conda run -n nl2sql-py312 uvicorn server.main:app --reload --host 0.0.0.0 --port 8000`
+  - `conda run -n nl2sql-py312 pytest -q`
 - 当前代码和 `.env` 已核实 `SERVER_PORT=8000`。
 - 依赖栈当前以 `docker/docker-compose.yml` 为准。已核实常用启动命令是：
   - `docker compose -f docker/docker-compose.yml up -d`
@@ -43,7 +41,7 @@
 - 有现成测试就运行，并优先运行与改动直接相关的最小测试集。
 - 没有对应测试就补齐，再运行新增测试和相关回归测试。
 - Bug 修复必须尽量带回归测试，避免同类问题再次出现。
-- 当前项目已在 `requirements.txt` 中声明 `pytest` 与 `pytest-asyncio`，测试命令默认使用 `conda run -n nl2sql pytest ...`。
+- 当前项目已在 `requirements.txt` 中声明 `pytest` 与 `pytest-asyncio`，测试命令默认使用 `conda run -n nl2sql-py312 pytest ...`。
 
 ## Test Organization
 - 新建测试脚本时，需符合当前项目的分层测试体系。
