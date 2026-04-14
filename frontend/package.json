@@ -1,7 +1,7 @@
 {
   "name": "NL2SQL-frontend",
   "version": "1.0.0",
-  "description": "NL2SQL智能问数系统 - 前端",
+  "description": "智能问数系统 - 前端",
   "type": "module",
   "scripts": {
     "dev": "NODE_OPTIONS='--no-deprecation' node ./node_modules/vite/bin/vite.js",

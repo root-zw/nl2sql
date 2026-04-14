@@ -1,6 +1,6 @@
 /**
  * API 服务层
- * NL2SQL
+ * 智能问数
  */
 import request from '@/utils/request'
 

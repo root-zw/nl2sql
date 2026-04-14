@@ -1,9 +1,9 @@
 /**
  * 本地存储工具类
- * NL2SQL
+ * 智能问数
  */
 
-const PREFIX = (import.meta.env.VITE_STORAGE_PREFIX && import.meta.env.VITE_STORAGE_PREFIX.trim()) || 'NL2SQL_'
+const PREFIX = (import.meta.env.VITE_STORAGE_PREFIX && import.meta.env.VITE_STORAGE_PREFIX.trim()) || 'SMART_QUERY_'
 
 /**
  * localStorage 工具类
@@ -263,4 +263,3 @@ export default {
   token,
   user
 }
-

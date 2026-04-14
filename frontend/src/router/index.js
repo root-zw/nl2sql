@@ -2,8 +2,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 const env = import.meta.env
-const BRAND_NAME = env.VITE_BRAND_NAME || 'NL2SQL'
-const QUERY_ROUTE_TITLE = env.VITE_QUERY_ROUTE_TITLE || `${BRAND_NAME}智能问答`
+const BRAND_NAME = env.VITE_BRAND_NAME || '智能问数'
+const QUERY_ROUTE_TITLE = env.VITE_QUERY_ROUTE_TITLE || BRAND_NAME
 const ADMIN_PAGE_TITLE = env.VITE_ADMIN_PAGE_TITLE || `${BRAND_NAME} 管理系统`
 const DOC_TITLE_SUFFIX = env.VITE_DOC_TITLE_SUFFIX || BRAND_NAME
 
@@ -49,12 +49,6 @@ const routes = [
   {
     path: '/query',
     redirect: '/chat'
-  },
-  {
-    path: '/query-simple',
-    name: 'QuerySimple',
-    component: () => import('@/views/Query.vue'),
-    meta: { title: `${QUERY_ROUTE_TITLE} - 简洁模式`, requiresAuth: true }
   },
   {
     path: '/admin/login',

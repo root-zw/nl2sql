@@ -1,6 +1,6 @@
 /**
  * Axios 请求配置和拦截器
- * NL2SQL
+ * 智能问数
  * 
  * 特性：
  * - 自动 Token 刷新（Access Token 过期前自动刷新）
@@ -164,4 +164,3 @@ export const put = (url, data, config) => {
 export const del = (url, config) => {
   return request.delete(url, config)
 }
-

@@ -1019,7 +1019,7 @@
           <el-form-item label="状态">
             <el-switch v-model="editForm.is_included" active-text="启用" inactive-text="禁用" />
             <el-text type="info" size="small" style="margin-left: 8px;">
-              禁用后该表及其所有字段不会出现在NL2SQL查询中
+              禁用后该表及其所有字段不会出现在智能问数查询中
             </el-text>
           </el-form-item>
         </template>
@@ -1363,7 +1363,7 @@
           >
           </el-select>
           <el-text type="info" size="small" style="margin-top: 4px;">
-            用于NL2SQL时的多种表达识别
+            用于智能问数时的多种表达识别
           </el-text>
         </el-form-item>
         
@@ -1408,7 +1408,7 @@
             inactive-text="禁用"
           />
           <el-text type="info" size="small" style="margin-left: 8px;">
-            禁用后该枚举值不会在NL2SQL中使用
+            禁用后该枚举值不会在智能问数中使用
           </el-text>
         </el-form-item>
       </el-form>

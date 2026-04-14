@@ -2,8 +2,8 @@
   <div class="login-page">
     <div class="login-content">
       <section class="intro-panel">
-        <p class="system-badge">NL2SQL Enterprise</p>
-        <h1>智能问数系统</h1>
+        <p class="system-badge">智能问数</p>
+        <h1>智能问数</h1>
         <p class="intro-desc">
           用自然语言提问，AI 自动生成并执行 SQL。保存历史记录，
           让数据洞察更快速、安全地抵达决策。
@@ -825,4 +825,3 @@ onMounted(() => {
   }
 }
 </style>
-

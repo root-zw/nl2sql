@@ -1,6 +1,6 @@
 /**
  * 通用工具函数
- * NL2SQL
+ * 智能问数
  */
 
 const DEFAULT_DELAY = Number.isFinite(Number(import.meta.env.VITE_DEBOUNCE_DELAY))
@@ -466,4 +466,3 @@ export default {
   arrayToTree,
   validatePasswordStrength
 }
-

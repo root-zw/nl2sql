@@ -1,6 +1,6 @@
 /**
  * 全局常量配置
- * NL2SQL
+ * 智能问数
  */
 
 const env = import.meta.env
@@ -210,4 +210,3 @@ export default {
   LANGUAGES,
   USER_ROLES
 }
-

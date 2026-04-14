@@ -57,10 +57,6 @@
       </div>
 
       <div class="sidebar-footer" v-if="!sidebarCollapsed">
-        <router-link to="/query-simple" class="footer-link">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
-          <span>简洁查询</span>
-        </router-link>
         <a v-if="isAdmin" href="/admin" target="_blank" class="footer-link">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
           <span>{{ adminEntryLabel }}</span>
@@ -654,9 +650,9 @@ const router = useRouter()
 
 // ==================== 环境变量配置 ====================
 const env = import.meta.env
-const brandName = env.VITE_BRAND_NAME || 'NL2SQL'
-const brandTagline = env.VITE_BRAND_TAGLINE || '智能问数系统'
-const heroTitle = env.VITE_HERO_TITLE || '用自然语言提问，AI 自动生成并执行 SQL'
+const brandName = env.VITE_BRAND_NAME || '智能问数'
+const brandTagline = env.VITE_BRAND_TAGLINE || '智能问数'
+const heroTitle = env.VITE_HERO_TITLE || '智能问数'
 const heroSubtitle = env.VITE_HERO_SUBTITLE || '无需编写代码，像聊天一样查询数据'
 const adminEntryLabel = env.VITE_ADMIN_ENTRY_LABEL || '管理后台'
 const backendPort = env.VITE_BACKEND_PORT || '8000'
@@ -707,7 +703,7 @@ const originalQueryId = ref(null)
 const tableBatchIndex = ref(0)
 const loadingAllTables = ref(false)
 const allAccessibleTables = ref([])
-// 展开全部功能相关（与 Query.vue 保持一致）
+// 展开全部功能相关
 const showAllAccessibleTables = ref(false)  // 是否显示所有可访问表模式
 const filteredAllTables = ref([])  // 过滤后的表列表
 const allTablesSearchQuery = ref('')  // 搜索关键词
@@ -1871,7 +1867,7 @@ function cancelTableSelection() {
   }
 }
 
-// 展开全部：调用 API 获取所有可访问表（与 Query.vue 保持一致）
+  // 展开全部：调用 API 获取所有可访问表
 async function expandAllTables() {
   if (loadingAllTables.value) return
 
@@ -4975,4 +4971,3 @@ watch(isLoggedIn, (val) => {
   }
 }
 </style>
-
