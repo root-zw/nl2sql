@@ -20,8 +20,8 @@ networks:
     ipam:
       driver: default
       config:
-        - subnet: 192.168.234.0/24
-          gateway: 192.168.234.1
+        - subnet: 172.21.0.0/24
+          gateway: 172.21.0.1
 
 services:
   # ==========================================
