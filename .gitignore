@@ -29,6 +29,10 @@ env/
 .vscode/
 .idea/
 .codex
+.cursor/
+CLAUDE.md
+_backup/
+_staging/
 *.swp
 *.swo
 *~
