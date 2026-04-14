@@ -1,7 +1,9 @@
 from pathlib import Path
 
 
-SQL_FILE = Path(__file__).resolve().parents[1] / "docker" / "init-scripts" / "init_database_complete.sql"
+ROOT_DIR = Path(__file__).resolve().parents[2]
+SQL_FILE = ROOT_DIR / "docker" / "init-scripts" / "init_database_complete.sql"
+STAMP_FILE = ROOT_DIR / "docker" / "init-scripts" / "999_stamp_alembic_baseline.sql"
 
 
 def test_init_sql_contains_runtime_tables_used_by_current_code():
@@ -33,3 +35,10 @@ def test_init_sql_creates_sync_views_after_milvus_tables():
 
     assert pending_table_pos < pending_view_pos
     assert history_table_pos < history_view_pos
+
+
+def test_docker_init_stamps_alembic_baseline_revision():
+    content = STAMP_FILE.read_text(encoding="utf-8")
+
+    assert "CREATE TABLE IF NOT EXISTS alembic_version" in content
+    assert "20260414_0001" in content

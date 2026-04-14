@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     timezone: str = Field(default="Asia/Shanghai", alias="TIMEZONE")
     server_host: str = Field(default="0.0.0.0", alias="SERVER_HOST")
-    server_port: int = Field(default=8000, alias="SERVER_PORT")
+    server_port: int = Field(default=8891, alias="SERVER_PORT")
     cors_allow_origins: str = Field(default="*", alias="CORS_ALLOW_ORIGINS")
     
     # === 数据库配置 ===

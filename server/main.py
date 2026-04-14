@@ -1,15 +1,16 @@
 """FastAPI 应用入口"""
 
-import os
 import logging
-import structlog
+import os
 from contextlib import asynccontextmanager
 from datetime import date
+
+import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse
 
 from server.config import settings
+from server.frontend_static import register_frontend_routes
 
 # 根据配置设置系统时区
 os.environ.setdefault('TZ', settings.timezone)
@@ -276,10 +277,8 @@ app.include_router(model_providers.scenario_router, prefix="/api/admin", tags=["
 app.include_router(prompts.router, prefix="/api/admin", tags=["管理-提示词模板"])
 # 注意：默认模型配置已合并到模型配置中，使用 scenario=default
 
-
-@app.get("/")
-async def root():
-    """根路径"""
+def build_root_payload() -> dict:
+    """构建前端未打包时的根路径回退信息。"""
     return {
         "name": settings.app_name,
         "version": settings.app_version,
@@ -307,6 +306,9 @@ async def root():
     }
 
 
+register_frontend_routes(app, fallback_payload=build_root_payload())
+
+
 if __name__ == "__main__":
     import uvicorn
     
@@ -317,4 +319,3 @@ if __name__ == "__main__":
         reload=settings.app_env == "development",
         log_level=settings.log_level.lower()
     )
-

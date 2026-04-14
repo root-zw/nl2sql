@@ -1,0 +1,19 @@
+[Unit]
+Description=NL2SQL FastAPI backend
+After=network-online.target nl2sql-infra.service
+Requires=nl2sql-infra.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zhangwei
+Group=zhangwei
+WorkingDirectory=/home/zhangwei/znws/nl2sql
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/home/zhangwei/miniconda3/bin/conda run --no-capture-output -n nl2sql-py312 alembic -c alembic.ini upgrade head
+ExecStart=/home/zhangwei/miniconda3/bin/conda run --no-capture-output -n nl2sql-py312 uvicorn server.main:app --host 0.0.0.0 --port 8891 --reload
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

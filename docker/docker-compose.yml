@@ -7,10 +7,10 @@
 #   - Attu (Milvus可视化界面)
 #
 # 使用方法:
-#   启动: docker compose up -d
-#   停止: docker compose down
-#   查看日志: docker compose logs -f
-#   查看状态: docker compose ps
+#   启动: docker compose -p nl2sql up -d
+#   停止: docker compose -p nl2sql down
+#   查看日志: docker compose -p nl2sql logs -f
+#   查看状态: docker compose -p nl2sql ps
 # ==========================================
 
 networks:
@@ -32,7 +32,7 @@ services:
     image: redis:7.4-alpine
     command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
     ports:
-      - "6380:6379"
+      - "26379:6379"
     volumes:
       - ./data/redis:/data
     environment:
@@ -61,7 +61,7 @@ services:
       TZ: Asia/Shanghai
       PGTZ: Asia/Shanghai
     ports:
-      - "5432:5432"
+      - "25432:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d:ro
@@ -200,4 +200,3 @@ services:
 # 恢复命令：
 #   tar -xzf backup-YYYYMMDD.tar.gz
 # ==========================================
-

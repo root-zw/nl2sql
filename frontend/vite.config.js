@@ -11,7 +11,7 @@ export default defineConfig(({ mode }) => {
   const apiProxyTarget =
     env.VITE_API_PROXY_TARGET ||
     process.env.VITE_API_PROXY_TARGET ||
-    'http://localhost:8000'
+    'http://localhost:8891'
 
   return {
     envDir,
@@ -40,4 +40,3 @@ export default defineConfig(({ mode }) => {
     }
   }
 })
-

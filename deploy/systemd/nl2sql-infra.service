@@ -1,0 +1,16 @@
+[Unit]
+Description=NL2SQL infrastructure stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/zhangwei/znws/nl2sql
+ExecStart=/usr/bin/docker compose -p nl2sql -f /home/zhangwei/znws/nl2sql/docker/docker-compose.yml up -d
+ExecStop=/usr/bin/docker compose -p nl2sql -f /home/zhangwei/znws/nl2sql/docker/docker-compose.yml down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

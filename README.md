@@ -872,12 +872,21 @@ text2sql/
 ├── docker/                          # Docker配置
 │   ├── docker-compose.yml           # Docker Compose
 │   └── init-scripts/
-│       └── init_database_complete.sql  # 数据库初始化
+│       ├── init_database_complete.sql   # 元数据库初始化基线SQL
+│       └── 999_stamp_alembic_baseline.sql # Docker首次建库后写入Alembic基线版本
 │
-├── tests/                           # 测试代码
-├── scripts/                         # 脚本工具
-├── docs/                            # 文档
+├── migrations/                      # Alembic迁移体系
+│   ├── env.py
+│   ├── sql_files.py
+│   └── versions/
+├── deploy/                          # 部署与systemd模板
+│   └── systemd/
+├── tests/                           # 分层测试
+│   ├── unit/
+│   ├── schema/
+│   └── integration/
 │
+├── alembic.ini                      # Alembic配置
 ├── env.template                     # 环境变量模板
 ├── requirements.txt                 # Python依赖
 └── README.md                        # 本文件
@@ -901,7 +910,7 @@ LLM_MODEL=qwen3-14b
 
 # === PostgreSQL元数据库（必填）===
 POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
+POSTGRES_PORT=25432
 POSTGRES_DB=text2sql_metadata
 POSTGRES_USER=text2sql_user
 POSTGRES_PASSWORD=your-secure-password
@@ -933,9 +942,9 @@ MILVUS_COLLECTION=semantic_metadata
 
 ```bash
 # Redis缓存
-REDIS_URL=redis://localhost:6379/0
+REDIS_URL=redis://localhost:26379/0
 REDIS_HOST=localhost
-REDIS_PORT=6379
+REDIS_PORT=26379
 ```
 
 ---
@@ -950,18 +959,21 @@ git clone <repository-url>
 cd text2sql
 
 # 创建conda环境
-conda create -n nl2sql python=3.11
-conda activate nl2sql
+conda create -n nl2sql-py312 python=3.12
+conda activate nl2sql-py312
 
 # 安装依赖
 pip install -r requirements.txt
+
+# 若网络不稳定，可显式切国内源
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 ```
 
 ### 2. 启动依赖服务
 
 ```bash
-# 使用Docker Compose启动PostgreSQL、Redis、Milvus
-docker compose -f docker/docker-compose.yml up -d
+# 使用 Docker Compose 启动 PostgreSQL、Redis、Milvus
+docker compose -p nl2sql -f docker/docker-compose.yml up -d
 ```
 
 ### 3. 配置环境变量
@@ -974,19 +986,26 @@ cp env.template .env
 vim .env
 ```
 
-### 4. 初始化数据库
+### 4. 初始化数据库与迁移
 
-数据库初始化脚本会在Docker启动时自动执行，或手动执行：
+Docker 首次建库时会自动执行 `docker/init-scripts/`，并写入 Alembic 基线版本。
+无论是新库还是后续升级，统一以 Alembic 为准：
 
 ```bash
-psql -h localhost -U text2sql_user -d text2sql_metadata -f docker/init-scripts/init_database_complete.sql
+conda run -n nl2sql-py312 alembic -c alembic.ini upgrade head
+```
+
+如果是历史库，已经通过旧 SQL 初始化过、但还没有 `alembic_version`，先执行一次：
+
+```bash
+conda run -n nl2sql-py312 alembic -c alembic.ini stamp 20260414_0001
 ```
 
 ### 5. 启动后端服务
 
 ```bash
-conda activate nl2sql
-uvicorn server.main:app --host 0.0.0.0 --port 8890 --reload
+conda activate nl2sql-py312
+uvicorn server.main:app --host 0.0.0.0 --port 8891 --reload
 ```
 
 ### 6. 启动前端服务
@@ -999,9 +1018,55 @@ npm run dev
 
 ### 7. 访问系统
 
-- 前端查询界面: http://localhost:3000
-- 管理后台: http://localhost:3000/admin
-- API文档: http://localhost:8890/docs
+- 开发模式前端: http://localhost:3000
+- 后端托管前端: http://localhost:8891
+- 管理后台: http://localhost:8891/admin
+- API文档: http://localhost:8891/docs
+
+### 8. 使用 systemd 管理
+
+仓库内置了 systemd 单元模板：
+
+- `deploy/systemd/nl2sql-infra.service`
+- `deploy/systemd/nl2sql-backend.service`
+
+其中 `nl2sql-backend.service` 已内置：
+
+- 启动前自动执行 `alembic -c alembic.ini upgrade head`
+- 使用 `uvicorn ... --reload`
+
+安装并启动：
+
+```bash
+sudo install -m 644 deploy/systemd/nl2sql-infra.service /etc/systemd/system/nl2sql-infra.service
+sudo install -m 644 deploy/systemd/nl2sql-backend.service /etc/systemd/system/nl2sql-backend.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now nl2sql-infra.service
+sudo systemctl enable --now nl2sql-backend.service
+```
+
+前端发布时先构建，再由后端托管：
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+### 9. 测试
+
+当前测试已按层拆分：
+
+```bash
+# 快速单元/回归
+conda run -n nl2sql-py312 pytest -q tests/unit
+
+# 元数据库初始化 SQL / Alembic 迁移
+conda run -n nl2sql-py312 pytest -q tests/schema
+
+# 真实数据库集成测试（需显式提供测试库）
+conda run -n nl2sql-py312 pytest -q -m integration
+```
 
 ---
 
