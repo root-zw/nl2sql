@@ -28,6 +28,7 @@ env/
 # IDE
 .vscode/
 .idea/
+.codex
 *.swp
 *.swo
 *~
@@ -75,4 +76,3 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
-

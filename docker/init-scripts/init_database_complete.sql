@@ -335,7 +335,7 @@ CREATE TABLE db_columns (
  -- 物理信息
  column_name VARCHAR(100) NOT NULL,
  data_type VARCHAR(50) NOT NULL,
- max_length INT,
+ max_length BIGINT,
  is_nullable BOOLEAN DEFAULT TRUE,
  is_primary_key BOOLEAN DEFAULT FALSE,
  is_foreign_key BOOLEAN DEFAULT FALSE,
@@ -887,9 +887,8 @@ BEGIN
 END $$;
 COMMENT ON COLUMN qa_few_shot_samples.source_tag IS '样本来源标签，如manual、feedback等';
 
-CREATE TRIGGER update_few_shot_samples_updated_at
-BEFORE UPDATE ON qa_few_shot_samples
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+-- 注意：update_few_shot_samples_updated_at 触发器需在 update_updated_at_column()
+-- 函数创建后再添加，避免空库初始化时报函数不存在
 
 CREATE TABLE IF NOT EXISTS qa_few_shot_feedback (
     feedback_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -1117,6 +1116,230 @@ COMMENT ON TABLE query_history IS '查询历史记录';
 COMMENT ON COLUMN query_history.intent_detection_result IS '意图识别结果（JSON）';
 
 -- ============================================================================
+-- 第八层：模型供应商与提示词模板
+-- 说明：
+-- - 当前后台已启用模型供应商管理、场景模型配置、提示词模板管理
+-- - 这些表需在空库初始化时直接创建，避免后台进入相关页面时报缺表
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS model_providers (
+    provider_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    provider_name VARCHAR(100) NOT NULL UNIQUE,
+    display_name VARCHAR(100) NOT NULL,
+    provider_type VARCHAR(50) NOT NULL,
+    base_url VARCHAR(500),
+    icon VARCHAR(100),
+    description TEXT,
+    is_enabled BOOLEAN DEFAULT TRUE,
+    is_valid BOOLEAN DEFAULT FALSE,
+    last_validated_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_providers_enabled
+    ON model_providers(is_enabled) WHERE is_enabled = TRUE;
+CREATE INDEX IF NOT EXISTS idx_model_providers_type
+    ON model_providers(provider_type);
+
+COMMENT ON TABLE model_providers IS '模型供应商表';
+
+CREATE TABLE IF NOT EXISTS provider_credentials (
+    credential_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    provider_id UUID NOT NULL REFERENCES model_providers(provider_id) ON DELETE CASCADE,
+    credential_name VARCHAR(100) NOT NULL,
+    encrypted_api_key TEXT NOT NULL,
+    extra_config JSONB DEFAULT '{}'::jsonb,
+    is_active BOOLEAN DEFAULT TRUE,
+    is_default BOOLEAN DEFAULT FALSE,
+    total_requests BIGINT DEFAULT 0,
+    total_tokens BIGINT DEFAULT 0,
+    last_used_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_provider_credentials_name UNIQUE (provider_id, credential_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_credentials_provider
+    ON provider_credentials(provider_id);
+CREATE INDEX IF NOT EXISTS idx_provider_credentials_active
+    ON provider_credentials(provider_id, is_active);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_provider_credentials_default
+    ON provider_credentials(provider_id) WHERE is_default = TRUE;
+
+COMMENT ON TABLE provider_credentials IS '模型供应商凭证表';
+COMMENT ON COLUMN provider_credentials.encrypted_api_key IS '加密存储的 API Key';
+
+CREATE TABLE IF NOT EXISTS provider_models (
+    model_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    provider_id UUID NOT NULL REFERENCES model_providers(provider_id) ON DELETE CASCADE,
+    model_name VARCHAR(100) NOT NULL,
+    display_name VARCHAR(100),
+    model_type VARCHAR(32) NOT NULL,
+    supports_function_calling BOOLEAN DEFAULT FALSE,
+    supports_json_mode BOOLEAN DEFAULT FALSE,
+    supports_streaming BOOLEAN DEFAULT TRUE,
+    supports_vision BOOLEAN DEFAULT FALSE,
+    context_window INT,
+    max_output_tokens INT,
+    default_temperature NUMERIC(4,2) DEFAULT 0.0,
+    default_top_p NUMERIC(4,2) DEFAULT 1.0,
+    default_max_tokens INT DEFAULT 2048,
+    is_enabled BOOLEAN DEFAULT TRUE,
+    is_custom BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_provider_models_name UNIQUE (provider_id, model_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_models_provider
+    ON provider_models(provider_id);
+CREATE INDEX IF NOT EXISTS idx_provider_models_type
+    ON provider_models(model_type);
+CREATE INDEX IF NOT EXISTS idx_provider_models_enabled
+    ON provider_models(is_enabled) WHERE is_enabled = TRUE;
+
+COMMENT ON TABLE provider_models IS '供应商模型表';
+
+CREATE TABLE IF NOT EXISTS scenario_model_configs (
+    config_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    scenario VARCHAR(50) NOT NULL,
+    model_id UUID REFERENCES provider_models(model_id) ON DELETE SET NULL,
+    credential_id UUID REFERENCES provider_credentials(credential_id) ON DELETE SET NULL,
+    temperature NUMERIC(4,2),
+    top_p NUMERIC(4,2),
+    max_tokens INT,
+    timeout_seconds INT DEFAULT 60,
+    max_retries INT DEFAULT 2,
+    extra_params JSONB DEFAULT '{}'::jsonb,
+    priority INT DEFAULT 0,
+    is_enabled BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_scenario_model_configs UNIQUE (scenario, priority)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scenario_model_configs_enabled
+    ON scenario_model_configs(is_enabled) WHERE is_enabled = TRUE;
+CREATE INDEX IF NOT EXISTS idx_scenario_model_configs_model
+    ON scenario_model_configs(model_id);
+
+COMMENT ON TABLE scenario_model_configs IS '模型场景配置表';
+
+CREATE TABLE IF NOT EXISTS prompt_templates (
+    template_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    scenario VARCHAR(50) NOT NULL,
+    prompt_type VARCHAR(50) NOT NULL,
+    display_name VARCHAR(100) NOT NULL,
+    description TEXT,
+    content TEXT NOT NULL,
+    version INT DEFAULT 1,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_prompt_templates UNIQUE (scenario, prompt_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_templates_active
+    ON prompt_templates(is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_prompt_templates_scenario
+    ON prompt_templates(scenario, prompt_type);
+
+COMMENT ON TABLE prompt_templates IS '提示词模板表';
+
+CREATE TABLE IF NOT EXISTS prompt_template_history (
+    history_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    template_id UUID NOT NULL REFERENCES prompt_templates(template_id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    version INT NOT NULL,
+    change_reason TEXT,
+    changed_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    changed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_template_history_template
+    ON prompt_template_history(template_id, version DESC);
+
+COMMENT ON TABLE prompt_template_history IS '提示词模板历史表';
+
+-- ============================================================================
+-- 第九层：多轮会话与活跃查询
+-- 说明：
+-- - 当前查询前台已启用 conversations 路由
+-- - 需要会话、消息、活跃查询三张表支撑多轮对话与取消查询能力
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS conversations (
+    conversation_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    title VARCHAR(255),
+    connection_id UUID REFERENCES database_connections(connection_id) ON DELETE SET NULL,
+    domain_id UUID REFERENCES business_domains(domain_id) ON DELETE SET NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    is_pinned BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    last_message_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_user_active
+    ON conversations(user_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_conversations_user_last_message
+    ON conversations(user_id, last_message_at DESC);
+
+COMMENT ON TABLE conversations IS '多轮会话表';
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    message_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    conversation_id UUID NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    role VARCHAR(20) NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    query_id UUID,
+    sql_text TEXT,
+    result_summary TEXT,
+    result_data JSONB,
+    status VARCHAR(20) NOT NULL DEFAULT 'completed',
+    error_message TEXT,
+    query_params JSONB,
+    context_message_ids UUID[],
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation
+    ON conversation_messages(conversation_id, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_conversation_messages_query
+    ON conversation_messages(query_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_messages_status
+    ON conversation_messages(status);
+
+COMMENT ON TABLE conversation_messages IS '会话消息表';
+
+CREATE TABLE IF NOT EXISTS active_queries (
+    query_id UUID PRIMARY KEY,
+    conversation_id UUID REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+    message_id UUID REFERENCES conversation_messages(message_id) ON DELETE SET NULL,
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    query_text TEXT NOT NULL,
+    connection_id UUID REFERENCES database_connections(connection_id) ON DELETE SET NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'running',
+    ws_connection_id VARCHAR(255),
+    started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    cancelled_at TIMESTAMP WITH TIME ZONE,
+    completed_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE INDEX IF NOT EXISTS idx_active_queries_user_status
+    ON active_queries(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_active_queries_conversation
+    ON active_queries(conversation_id);
+
+COMMENT ON TABLE active_queries IS '活跃查询状态表';
+
+-- ============================================================================
 -- 初始化数据
 -- ============================================================================
 
@@ -1173,6 +1396,31 @@ CREATE TRIGGER update_relationships_updated_at BEFORE UPDATE ON table_relationsh
 CREATE TRIGGER update_rules_updated_at BEFORE UPDATE ON global_rules
  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER update_model_providers_updated_at BEFORE UPDATE ON model_providers
+ FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_provider_credentials_updated_at BEFORE UPDATE ON provider_credentials
+ FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_provider_models_updated_at BEFORE UPDATE ON provider_models
+ FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_scenario_model_configs_updated_at BEFORE UPDATE ON scenario_model_configs
+ FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_prompt_templates_updated_at BEFORE UPDATE ON prompt_templates
+ FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_conversations_updated_at BEFORE UPDATE ON conversations
+ FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_conversation_messages_updated_at BEFORE UPDATE ON conversation_messages
+ FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+DROP TRIGGER IF EXISTS update_few_shot_samples_updated_at ON qa_few_shot_samples;
+CREATE TRIGGER update_few_shot_samples_updated_at BEFORE UPDATE ON qa_few_shot_samples
+ FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- ============================================================================
 -- Schema扩展：视图
 -- ============================================================================
@@ -1201,42 +1449,8 @@ GROUP BY c.connection_id, c.connection_name;
 
 COMMENT ON VIEW connection_stats IS '数据库连接统计视图';
 
--- 变更待同步统计视图
-CREATE OR REPLACE VIEW v_pending_changes_stats AS
-SELECT
-    milvus_pending_changes.connection_id,
-    milvus_pending_changes.entity_type,
-    COUNT(*) AS pending_count,
-    MIN(milvus_pending_changes.created_at) AS earliest_change,
-    MAX(milvus_pending_changes.created_at) AS latest_change
-FROM public.milvus_pending_changes
-WHERE milvus_pending_changes.sync_status = 'pending'
-GROUP BY milvus_pending_changes.connection_id, milvus_pending_changes.entity_type
-ORDER BY pending_count DESC;
-
-COMMENT ON VIEW v_pending_changes_stats IS '待同步变更统计视图';
-
--- 同步历史统计视图（最近30天）
-CREATE OR REPLACE VIEW v_sync_history_stats AS
-SELECT
-    date_trunc('day', milvus_sync_history.started_at) AS sync_date,
-    milvus_sync_history.connection_id,
-    milvus_sync_history.sync_type,
-    milvus_sync_history.triggered_by,
-    milvus_sync_history.status,
-    COUNT(*) AS sync_count,
-    AVG(milvus_sync_history.duration_seconds) AS avg_duration,
-    SUM(milvus_sync_history.synced_entities) AS total_synced_entities
-FROM public.milvus_sync_history
-WHERE milvus_sync_history.started_at >= CURRENT_DATE - INTERVAL '30 days'
-GROUP BY date_trunc('day', milvus_sync_history.started_at),
-         milvus_sync_history.connection_id,
-         milvus_sync_history.sync_type,
-         milvus_sync_history.triggered_by,
-         milvus_sync_history.status
-ORDER BY date_trunc('day', milvus_sync_history.started_at) DESC;
-
-COMMENT ON VIEW v_sync_history_stats IS '同步历史统计视图（最近30天）';
+-- 注意：以下两个视图依赖 milvus_pending_changes / milvus_sync_history，
+-- 需在相关表创建完成后再创建，避免空库初始化时报 relation does not exist
 
 -- ============================================================================
 -- 兼容性补丁：数据修复
@@ -1484,6 +1698,42 @@ COMMENT ON COLUMN sync_errors.context IS '上下文信息，包含sync_id、conn
 COMMENT ON COLUMN sync_errors.next_retry_at IS '下次重试时间，NULL表示不重试';
 COMMENT ON COLUMN sync_errors.resolved IS '错误是否已解决';
 COMMENT ON COLUMN sync_errors.active IS '是否在活跃重试队列中';
+
+-- 依赖 Milvus 同步表的统计视图：必须放在相关表创建之后
+CREATE OR REPLACE VIEW v_pending_changes_stats AS
+SELECT
+    milvus_pending_changes.connection_id,
+    milvus_pending_changes.entity_type,
+    COUNT(*) AS pending_count,
+    MIN(milvus_pending_changes.created_at) AS earliest_change,
+    MAX(milvus_pending_changes.created_at) AS latest_change
+FROM public.milvus_pending_changes
+WHERE milvus_pending_changes.sync_status = 'pending'
+GROUP BY milvus_pending_changes.connection_id, milvus_pending_changes.entity_type
+ORDER BY pending_count DESC;
+
+COMMENT ON VIEW v_pending_changes_stats IS '待同步变更统计视图';
+
+CREATE OR REPLACE VIEW v_sync_history_stats AS
+SELECT
+    date_trunc('day', milvus_sync_history.started_at) AS sync_date,
+    milvus_sync_history.connection_id,
+    milvus_sync_history.sync_type,
+    milvus_sync_history.triggered_by,
+    milvus_sync_history.status,
+    COUNT(*) AS sync_count,
+    AVG(milvus_sync_history.duration_seconds) AS avg_duration,
+    SUM(milvus_sync_history.synced_entities) AS total_synced_entities
+FROM public.milvus_sync_history
+WHERE milvus_sync_history.started_at >= CURRENT_DATE - INTERVAL '30 days'
+GROUP BY date_trunc('day', milvus_sync_history.started_at),
+         milvus_sync_history.connection_id,
+         milvus_sync_history.sync_type,
+         milvus_sync_history.triggered_by,
+         milvus_sync_history.status
+ORDER BY date_trunc('day', milvus_sync_history.started_at) DESC;
+
+COMMENT ON VIEW v_sync_history_stats IS '同步历史统计视图（最近30天）';
 
 -- 为自动同步表添加触发器
 CREATE TRIGGER update_sync_history_updated_at BEFORE UPDATE ON milvus_sync_history

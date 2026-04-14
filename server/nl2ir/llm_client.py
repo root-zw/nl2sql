@@ -380,6 +380,52 @@ class LLMClient:
                 "temporary failure in name resolution",
             ]
         )
+
+    @staticmethod
+    def _is_enable_thinking_rejected(error: Exception) -> bool:
+        """识别网关/模型不支持 enable_thinking 的 400 错误。"""
+        message = str(error).lower()
+        return (
+            "enable_thinking" in message
+            and ("extra_forbidden" in message or "extra inputs are not permitted" in message)
+        )
+
+    @staticmethod
+    def _remove_enable_thinking(request_params: Dict[str, Any]) -> bool:
+        """从请求参数中剔除 enable_thinking，返回是否有实际移除。"""
+        removed = False
+        extra_body = request_params.get("extra_body")
+        if isinstance(extra_body, dict):
+            if "enable_thinking" in extra_body:
+                extra_body.pop("enable_thinking", None)
+                removed = True
+            template_kwargs = extra_body.get("chat_template_kwargs")
+            if isinstance(template_kwargs, dict) and "enable_thinking" in template_kwargs:
+                template_kwargs.pop("enable_thinking", None)
+                removed = True
+                if not template_kwargs:
+                    extra_body.pop("chat_template_kwargs", None)
+            if not extra_body:
+                request_params.pop("extra_body", None)
+        return removed
+
+    @staticmethod
+    def _is_server_error(error: Exception) -> bool:
+        """识别 5xx 服务端错误。"""
+        message = str(error).lower()
+        return bool(re.search(r"error code:\s*5\d\d", message))
+
+    @staticmethod
+    def _remove_tooling(request_params: Dict[str, Any]) -> bool:
+        """移除 tools/tool_choice，返回是否有实际移除。"""
+        removed = False
+        if "tool_choice" in request_params:
+            request_params.pop("tool_choice", None)
+            removed = True
+        if "tools" in request_params:
+            request_params.pop("tools", None)
+            removed = True
+        return removed
     
     async def chat_completion(
         self,
@@ -425,7 +471,6 @@ class LLMClient:
             chat_template_kwargs = {**existing_template_kwargs, **chat_template_kwargs}
 
         if settings.llm_enable_thinking is not None:
-            extra_body.setdefault("enable_thinking", settings.llm_enable_thinking)
             chat_template_kwargs.setdefault("enable_thinking", settings.llm_enable_thinking)
 
         if chat_template_kwargs:
@@ -471,6 +516,22 @@ class LLMClient:
                 return response.model_dump()
             except Exception as e:
                 last_error = e
+                if self._is_enable_thinking_rejected(e):
+                    if self._remove_enable_thinking(request_params):
+                        logger.warning(
+                            "模型不支持 enable_thinking，已自动降级重试",
+                            scenario=self.scenario,
+                            model=self.model,
+                        )
+                        continue
+                if self._is_server_error(e):
+                    if self._remove_tooling(request_params):
+                        logger.warning(
+                            "检测到5xx且工具调用失败，已自动降级为无tools重试",
+                            scenario=self.scenario,
+                            model=self.model,
+                        )
+                        continue
                 if (
                     self.alt_base_url
                     and self.active_base_url != self.alt_base_url
@@ -545,7 +606,6 @@ class LLMClient:
             chat_template_kwargs = {**existing_template_kwargs, **chat_template_kwargs}
 
         if settings.llm_enable_thinking is not None:
-            extra_body.setdefault("enable_thinking", settings.llm_enable_thinking)
             chat_template_kwargs.setdefault("enable_thinking", settings.llm_enable_thinking)
 
         if chat_template_kwargs:
@@ -584,6 +644,22 @@ class LLMClient:
                 return _iterator()
             except Exception as e:
                 last_error = e
+                if self._is_enable_thinking_rejected(e):
+                    if self._remove_enable_thinking(request_params):
+                        logger.warning(
+                            "模型不支持 enable_thinking（流式），已自动降级重试",
+                            scenario=self.scenario,
+                            model=self.model,
+                        )
+                        continue
+                if self._is_server_error(e):
+                    if self._remove_tooling(request_params):
+                        logger.warning(
+                            "检测到5xx且工具调用失败（流式），已自动降级为无tools重试",
+                            scenario=self.scenario,
+                            model=self.model,
+                        )
+                        continue
                 if (
                     self.alt_base_url
                     and self.active_base_url != self.alt_base_url
@@ -691,6 +767,34 @@ class LLMClient:
                         logger.error("提取函数调用失败", error=str(e), preview=cleaned[:200])
                         return None
             
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                cleaned = self._normalize_function_args(content)
+                try:
+                    parsed = json.loads(cleaned)
+                except json.JSONDecodeError:
+                    decoder = json.JSONDecoder()
+                    try:
+                        parsed, _ = decoder.raw_decode(cleaned)
+                    except json.JSONDecodeError:
+                        return None
+
+                if isinstance(parsed, dict):
+                    if "arguments" in parsed and isinstance(parsed["arguments"], dict):
+                        return parsed["arguments"]
+                    if "function" in parsed and isinstance(parsed["function"], dict):
+                        func_args = parsed["function"].get("arguments")
+                        if isinstance(func_args, dict):
+                            return func_args
+                        if isinstance(func_args, str):
+                            try:
+                                obj = json.loads(self._normalize_function_args(func_args))
+                                if isinstance(obj, dict):
+                                    return obj
+                            except Exception:
+                                pass
+                    return parsed
+
             return None
             
         except (KeyError, IndexError, json.JSONDecodeError) as e:

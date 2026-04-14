@@ -15,6 +15,18 @@ import asyncpg
 
 from server.config import settings
 
+MYSQL_UNBOUNDED_LENGTH_TYPES = {
+    "tinytext",
+    "text",
+    "mediumtext",
+    "longtext",
+    "tinyblob",
+    "blob",
+    "mediumblob",
+    "longblob",
+    "json",
+}
+
 
 def escape_odbc_value(value: str) -> str:
     """
@@ -30,6 +42,31 @@ def escape_odbc_value(value: str) -> str:
         escaped = value.replace('}', '}}').replace('{', '{{')
         return f"{{{escaped}}}"
     return value
+
+
+def normalize_mysql_max_length(
+    data_type: Optional[str],
+    max_length: Optional[int]
+) -> Optional[int]:
+    """
+    归一化 MySQL/MariaDB 的 CHARACTER_MAXIMUM_LENGTH。
+
+    对 TEXT/BLOB/JSON 这类“理论超大长度”字段，返回 None，
+    避免把 4294967295 之类的哨兵值写入元数据库。
+    """
+    if max_length is None:
+        return None
+
+    normalized_type = (data_type or "").strip().lower()
+    if normalized_type in MYSQL_UNBOUNDED_LENGTH_TYPES:
+        return None
+
+    try:
+        normalized_length = int(max_length)
+    except (TypeError, ValueError):
+        return None
+
+    return normalized_length if normalized_length >= 0 else None
 
 
 @dataclass
@@ -422,7 +459,7 @@ class MySQLInspector(DatabaseInspector):
                         columns.append(ColumnInfo(
                             column_name=col[0],
                             data_type=col[1],
-                            max_length=col[2],
+                            max_length=normalize_mysql_max_length(col[1], col[2]),
                             is_nullable=(col[3] == 'YES'),
                             ordinal_position=col[4],
                             is_primary_key=(col[5] == 'PRI'),
@@ -725,4 +762,3 @@ def get_inspector(
         return PostgreSQLInspector(host, port, database, username, password)
     else:
         raise ValueError(f"不支持的数据库类型: {db_type}")
-
