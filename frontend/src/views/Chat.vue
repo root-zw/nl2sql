@@ -779,6 +779,21 @@
                 {{ domain.name }}
               </option>
             </select>
+            <div class="confirmation-mode-group" :class="{ disabled: preQueryConfirmationLocked }">
+              <span class="confirmation-mode-label">本次确认</span>
+              <button
+                v-for="option in confirmationModeOptions"
+                :key="option.value"
+                type="button"
+                class="confirmation-mode-btn"
+                :class="{ active: queryConfirmationMode === option.value }"
+                :disabled="preQueryConfirmationLocked"
+                :title="option.description"
+                @click="setQueryConfirmationMode(option.value)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
             <label class="option-checkbox">
               <input type="checkbox" v-model="explainOnly" />
               <span>仅生成SQL</span>
@@ -816,7 +831,7 @@
               </button>
             </div>
           </div>
-          <p class="input-hint">按 Enter 发送，Shift + Enter 换行</p>
+          <p class="input-hint">{{ inputHintText }}</p>
         </div>
       </footer>
     </main>
@@ -1012,6 +1027,24 @@ const selectedDomain = ref('')
 const availableConnections = ref([])
 const availableDomains = ref([])
 const explainOnly = ref(false)
+const confirmationModeOptions = [
+  {
+    value: 'system',
+    label: '跟随系统',
+    description: '使用系统默认或当前会话的确认策略'
+  },
+  {
+    value: 'adaptive',
+    label: '智能确认',
+    description: '仅在歧义、高风险或低置信度时进入确认'
+  },
+  {
+    value: 'always_confirm',
+    label: '始终确认',
+    description: '本次提问先进入确认，再继续生成或执行'
+  }
+]
+const queryConfirmationMode = ref('system')
 
 // WebSocket
 const wsRef = ref(null)
@@ -1124,6 +1157,24 @@ const inputPlaceholder = computed(() => {
   return '输入追问内容，按 Enter 发送...'
 })
 
+const preQueryConfirmationLocked = computed(() => {
+  return hasActivePendingSession.value || interactionLocked.value
+})
+
+const inputHintText = computed(() => {
+  const base = '按 Enter 发送，Shift + Enter 换行'
+  if (hasActivePendingSession.value) {
+    return `${base}；当前正在确认上一条查询`
+  }
+  if (queryConfirmationMode.value === 'adaptive') {
+    return `${base}；本次使用智能确认`
+  }
+  if (queryConfirmationMode.value === 'always_confirm') {
+    return `${base}；本次提问将先进入确认`
+  }
+  return base
+})
+
 // ==================== 生命周期 ====================
 onMounted(async () => {
   document.documentElement.classList.add('no-page-scroll')
@@ -1166,6 +1217,17 @@ async function loadInitialData() {
 
 function buildIdempotencyKey(prefix = 'session-action') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function setQueryConfirmationMode(mode) {
+  if (preQueryConfirmationLocked.value) return
+  queryConfirmationMode.value = mode
+}
+
+function consumeQueryConfirmationMode() {
+  const mode = queryConfirmationMode.value === 'system' ? null : queryConfirmationMode.value
+  queryConfirmationMode.value = 'system'
+  return mode
 }
 
 function normalizeSessionSnapshot(payload) {
@@ -1628,10 +1690,13 @@ async function handleSendMessage() {
     return
   }
 
+  const confirmationModeForSend = consumeQueryConfirmationMode()
   clearPendingSessionState()
   const assistantMessageId = createAssistantPlaceholder()
   prepareAssistantPlaceholder(assistantMessageId)
-  await executeQueryViaWebSocket(text, assistantMessageId)
+  await executeQueryViaWebSocket(text, assistantMessageId, {
+    confirmationMode: confirmationModeForSend
+  })
 }
 
 // 通过 WebSocket 执行查询
@@ -1664,6 +1729,7 @@ async function executeQueryViaWebSocket(text, assistantMessageId, options = {}) 
       selected_table_ids: options.selectedTableIds || null,
       multi_table_mode: options.multiTableMode || null,
       original_query_id: options.originalQueryId || null,
+      confirmation_mode: options.confirmationMode || null,
       force_execute: Boolean(options.forceExecute),
       explain_only: explainOnly.value,
       token: token ? `Bearer ${token}` : null
@@ -5176,6 +5242,53 @@ watch(isLoggedIn, (val) => {
   margin: 0;
 }
 
+.confirmation-mode-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+
+.confirmation-mode-group.disabled {
+  opacity: 0.6;
+}
+
+.confirmation-mode-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.confirmation-mode-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.confirmation-mode-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.confirmation-mode-btn.active {
+  background: rgba(99, 102, 241, 0.12);
+  color: var(--accent-color);
+  font-weight: 600;
+}
+
+.confirmation-mode-btn:disabled {
+  cursor: not-allowed;
+}
+
 .input-wrapper {
   display: flex;
   align-items: flex-end;
@@ -5690,6 +5803,21 @@ watch(isLoggedIn, (val) => {
     padding: 8px 10px;
     font-size: 12px;
   }
+
+  .confirmation-mode-group {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .confirmation-mode-label {
+    padding-left: 2px;
+  }
+
+  .confirmation-mode-btn {
+    flex: 1;
+    min-width: 0;
+    padding: 8px 6px;
+  }
   
   .input-wrapper {
     padding: 10px 12px;
@@ -5772,6 +5900,16 @@ watch(isLoggedIn, (val) => {
   
   .option-select {
     width: 100%;
+  }
+
+  .confirmation-mode-group {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .confirmation-mode-label {
+    width: 100%;
+    padding: 0 0 2px 2px;
   }
 }
 

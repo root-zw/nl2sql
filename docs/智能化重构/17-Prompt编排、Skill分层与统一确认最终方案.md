@@ -667,13 +667,15 @@ if user_rejects_current_table:
 - `adaptive`
 - `always_confirm`
 
-建议支持两层来源：
+建议支持三层来源：
 
+- 单次提问前的 one-shot 覆盖
 - 用户默认偏好
 - 会话级临时覆盖
 
 建议前端使用位置：
 
+- Chat 输入区发送前的“本次确认策略”按钮组
 - Chat 页统一确认区的偏好开关
 - 会话级设置
 
@@ -682,6 +684,18 @@ if user_rejects_current_table:
 - `query_sessions.state_json`
 - 动作推进时的策略判断
 - Prompt Assembly 的 `state_context_block`
+
+建议优先级：
+
+- 本次提问显式传入的 `confirmation_mode`
+- 当前 `query_id` 已保存的 `confirmation_mode`
+- 系统默认策略
+
+其中：
+
+- 单次提问覆盖只作用于这一次新请求
+- 进入统一确认容器后的自由文本回复，不应把它当作新的策略切换入口
+- 确认中断后的续跑，应优先沿用当前 `query_id` 已保存的策略
 - Prompt Assembly 的 `result_context_block`
 
 ### 5.12 状态推进建议

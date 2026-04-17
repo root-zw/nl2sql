@@ -10,6 +10,19 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+ALLOWED_CONFIRMATION_MODES = {"adaptive", "always_confirm"}
+
+
+def resolve_confirmation_mode(
+    request_mode: Optional[str],
+    existing_mode: Optional[str],
+    default_mode: Optional[str],
+) -> str:
+    for candidate in (request_mode, existing_mode, default_mode, "always_confirm"):
+        if candidate in ALLOWED_CONFIRMATION_MODES:
+            return str(candidate)
+    return "always_confirm"
+
 
 def get_revision_text(revision_request: Optional[Dict[str, Any]]) -> str:
     if not revision_request:

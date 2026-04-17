@@ -1,6 +1,7 @@
 from server.api.query.confirmation_utils import (
     build_draft_confirmation_summary,
     compose_question_with_revision,
+    resolve_confirmation_mode,
 )
 
 
@@ -33,3 +34,20 @@ def test_build_draft_confirmation_summary_includes_core_ir_facts():
     assert "开发商" in summary
     assert "最近1年" in summary
     assert "只看住宅用地" in summary
+
+
+def test_resolve_confirmation_mode_prefers_request_override():
+    result = resolve_confirmation_mode("adaptive", "always_confirm", "always_confirm")
+
+    assert result == "adaptive"
+
+
+def test_resolve_confirmation_mode_falls_back_to_existing_state_and_default():
+    assert resolve_confirmation_mode(None, "adaptive", "always_confirm") == "adaptive"
+    assert resolve_confirmation_mode(None, None, "always_confirm") == "always_confirm"
+
+
+def test_resolve_confirmation_mode_uses_safe_fallback_for_invalid_values():
+    result = resolve_confirmation_mode("invalid", "broken", "weird")
+
+    assert result == "always_confirm"

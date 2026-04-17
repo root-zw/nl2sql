@@ -109,6 +109,7 @@ from .derived_metrics import (
 from .confirmation_utils import (
     build_draft_confirmation_summary as _build_draft_confirmation_summary,
     compose_question_with_revision as _compose_question_with_revision,
+    resolve_confirmation_mode as _resolve_confirmation_mode,
 )
 
 logger = structlog.get_logger()
@@ -582,7 +583,11 @@ async def query(
             existing_state = dict(existing_session.get("state_json") or {}) if existing_session else {}
         except Exception as exc:
             logger.warning("读取既有 query_session 失败", query_id=query_id, error=str(exc))
-    confirmation_mode = existing_state.get("confirmation_mode") or settings.confirmation_mode
+    confirmation_mode = _resolve_confirmation_mode(
+        request.confirmation_mode,
+        existing_state.get("confirmation_mode"),
+        settings.confirmation_mode,
+    )
     revision_request = existing_state.get("revision_request")
     if request.ir and existing_state.get("resolved_question_text"):
         effective_question_text = existing_state.get("resolved_question_text")
@@ -705,6 +710,7 @@ async def query(
                 "skip_cache": request.skip_cache,
                 "force_execute": request.force_execute,
                 "explain_only": request.explain_only,
+                "confirmation_mode": confirmation_mode,
             },
         },
     )

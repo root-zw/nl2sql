@@ -64,6 +64,7 @@
 - 确认模式
   - 已新增 `CONFIRMATION_MODE`
   - 当前仓库默认值已切到 `always_confirm`
+  - Chat 提问区已支持“本次确认策略”按钮组，可单次覆盖为 `adaptive` / `always_confirm`
 - 自动选表纠错
   - 高置信度自动选表成功后已保留 `candidate_snapshot`
   - `change_table` 已能打断运行中查询并回退到 `table_resolution`

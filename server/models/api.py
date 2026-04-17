@@ -34,6 +34,7 @@ class QueryRequest(BaseModel):
     skip_cache: bool = False
     force_execute: bool = False  # 跳过成本检查
     explain_only: bool = False   # 只返回 SQL 不执行
+    confirmation_mode: Optional[Literal["adaptive", "always_confirm"]] = None  # 本次查询的确认策略覆盖
     
     # 叙述生成控制（供调用方覆盖全局配置，例如 Dify 工具调用时关闭内部叙述）
     disable_narrative: bool = False
