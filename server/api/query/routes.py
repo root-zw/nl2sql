@@ -12,7 +12,16 @@ from fastapi import APIRouter, HTTPException, Depends, Query, WebSocket, WebSock
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from server.models.api import QueryRequest, QueryResponse, QueryResult, ConfirmationCard, TableSelectionCard, AccessibleTableItem, AccessibleTablesResponse
+from server.models.api import (
+    QueryRequest,
+    QueryResponse,
+    QueryResult,
+    ConfirmationCard,
+    TableSelectionCard,
+    AccessibleTableItem,
+    AccessibleTablesResponse,
+    QuerySessionActionRequest,
+)
 from server.models.ir import IntermediateRepresentation
 from server.models.permission import UserAccessibleConnectionsResponse
 from server.exceptions import NL2SQLError, CostExceededError, SecurityError, CompilationError, AuthorizationError
@@ -43,14 +52,18 @@ from uuid import UUID
 from server.services.schema_filter_service import SchemaFilterService
 from server.services.permission_service import UserConnectionAccessService
 from server.services.conversation_service import ConversationService, ActiveQueryRegistry
+from server.services.draft_action_service import DraftActionService
+from server.services.query_session_service import QuerySessionService
 from server.services.stop_signal_service import StopSignalService, QueryStoppedException
 from server.utils.db_pool import get_metadata_pool
+from server.utils.json_utils import sanitize_for_json
 
 # 全局查询取消检查器
 _cancel_check_queries: Dict[str, bool] = {}
 
 # 使用 contextvars 传递 message_id（用于停止信号检查）
 _message_id_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar('message_id', default=None)
+_query_id_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("query_id", default=None)
 
 # ============================================================
 # 从拆分模块导入
@@ -118,6 +131,15 @@ _stream_emitter_ctx: contextvars.ContextVar[Optional["QueryStreamEmitter"]] = co
     "query_stream_emitter",
     default=None
 )
+
+
+def _try_uuid(value: Optional[str]) -> Optional[UUID]:
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 async def _check_stop_signal(step_name: str = ""):
@@ -512,10 +534,11 @@ async def query(
 
     stream = _stream_emitter_ctx.get(None)
 
-    query_id = str(uuid.uuid4())
+    query_id = request.original_query_id or _query_id_ctx.get() or str(uuid.uuid4())
     timestamp = to_isoformat(now_with_tz())
     start_time = time.time()  # 记录开始时间
     result_streamed = False
+    query_session_service = QuerySessionService()
     
     # 构建认证状态信息
     auth_status = AuthStatus(
@@ -535,6 +558,104 @@ async def query(
         actual_user_id = str(current_user.user_id)
         actual_role = current_user.role
         logger.debug("使用Token认证的用户", user_id=actual_user_id, role=actual_role)
+
+    session_user_id = _try_uuid(actual_user_id)
+    session_conversation_id = _try_uuid(request.conversation_id)
+    session_message_id = _try_uuid(_message_id_ctx.get() or request.message_id)
+
+    async def _write_query_session(
+        *,
+        status: str,
+        current_node: str,
+        state_updates: Optional[Dict[str, Any]] = None,
+        last_error: Optional[str] = None,
+    ) -> None:
+        try:
+            await query_session_service.upsert_session(
+                query_id=UUID(query_id),
+                user_id=session_user_id,
+                conversation_id=session_conversation_id,
+                message_id=session_message_id,
+                status=status,
+                current_node=current_node,
+                state_json=state_updates,
+                last_error=last_error,
+            )
+        except Exception as exc:
+            logger.warning("写入 query_sessions 失败", query_id=query_id, error=str(exc))
+
+    async def _update_query_session(
+        *,
+        status: Optional[str] = None,
+        current_node: Optional[str] = None,
+        state_updates: Optional[Dict[str, Any]] = None,
+        last_error: Optional[str] = None,
+    ) -> None:
+        try:
+            await query_session_service.update_session(
+                UUID(query_id),
+                status=status,
+                current_node=current_node,
+                state_updates=state_updates,
+                conversation_id=session_conversation_id,
+                message_id=session_message_id,
+                last_error=last_error,
+            )
+        except Exception as exc:
+            logger.warning("更新 query_sessions 失败", query_id=query_id, error=str(exc))
+
+    async def _return_query_response(
+        response: QueryResponse,
+        *,
+        status: str,
+        current_node: str,
+        state_updates: Optional[Dict[str, Any]] = None,
+        last_error: Optional[str] = None,
+    ):
+        await _update_query_session(
+            status=status,
+            current_node=current_node,
+            state_updates=state_updates,
+            last_error=last_error,
+        )
+        return response
+
+    async def _return_json_query_response(
+        response: QueryResponse,
+        *,
+        status: str,
+        current_node: str,
+        state_updates: Optional[Dict[str, Any]] = None,
+        last_error: Optional[str] = None,
+    ):
+        await _update_query_session(
+            status=status,
+            current_node=current_node,
+            state_updates=state_updates,
+            last_error=last_error,
+        )
+        return JSONResponse(
+            content=json.loads(response.model_dump_json()),
+            media_type="application/json"
+        )
+
+    await _write_query_session(
+        status="running",
+        current_node="question_intake",
+        state_updates={
+            "question_text": request.text,
+            "confirmation_mode": "adaptive",
+            "pending_actions": [],
+            "selected_table_ids": request.get_selected_table_ids(),
+            "request_context": {
+                "connection_id": request.connection_id,
+                "domain_id": request.domain_id,
+                "skip_cache": request.skip_cache,
+                "force_execute": request.force_execute,
+                "explain_only": request.explain_only,
+            },
+        },
+    )
 
     # 创建或恢复查询追踪器
     # 如果请求带有 original_query_id（用户确认表选择后的续接请求），
@@ -562,6 +683,7 @@ async def query(
     # 支持多表选择：优先使用 selected_table_ids，向后兼容 selected_table_id
     selected_table_ids = request.get_selected_table_ids()
     effective_selected_table_id = selected_table_ids[0] if selected_table_ids else None
+    candidate_snapshot = None
 
     # 跨分区查询标志（跨年UNION/对比等场景）
     is_cross_partition_query = False
@@ -642,9 +764,22 @@ async def query(
                     
                     if table_selection_result.get("status") == "need_confirmation":
                         tracer.finalize({"status": "table_selection_needed"}, save_to_file=False)
-                        return table_selection_result.get("response")
+                        pending_response = table_selection_result.get("response")
+                        pending_card = pending_response.table_selection if pending_response else None
+                        await _update_query_session(
+                            status="awaiting_user_action",
+                            current_node="table_resolution",
+                            state_updates={
+                                "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
+                                "candidate_snapshot": pending_card.model_dump() if pending_card else {},
+                                "recommended_table_ids": list(getattr(pending_card, "recommended_table_ids", []) or []),
+                                "selected_table_ids": selected_table_ids,
+                            },
+                        )
+                        return pending_response
                     elif table_selection_result.get("status") == "success":
                         effective_selected_table_id = table_selection_result.get("selected_table_id")
+                        candidate_snapshot = table_selection_result.get("candidate_snapshot")
                         # 获取多表选择结果（跨年查询时可能有多个表）
                         result_table_ids = table_selection_result.get("selected_table_ids", [])
                         if result_table_ids:
@@ -676,12 +811,18 @@ async def query(
                         })
                         await _stream_error(stream, error_info)
                         tracer.finalize()
-                        return QueryResponse(
+                        return await _return_query_response(
+                            QueryResponse(
                             status="error",
                             error=error_info,
                             auth_status=auth_status,
                             query_id=query_id,
                             timestamp=timestamp
+                            ),
+                            status="failed",
+                            current_node="table_resolution",
+                            state_updates={"selected_table_ids": selected_table_ids},
+                            last_error=error_info.get("message"),
                         )
             elif settings.llm_table_selection_enabled and request.text:
                 # 跨连接 LLM 表选择（仅当用户未选择表时）
@@ -703,10 +844,23 @@ async def query(
                 if table_selection_result.get("status") == "need_confirmation":
                     # 暂停 trace（不立即保存，等待用户确认后续接继续追踪）
                     tracer.finalize({"status": "table_selection_needed"}, save_to_file=False)
-                    return table_selection_result.get("response")
+                    pending_response = table_selection_result.get("response")
+                    pending_card = pending_response.table_selection if pending_response else None
+                    await _update_query_session(
+                        status="awaiting_user_action",
+                        current_node="table_resolution",
+                        state_updates={
+                            "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
+                            "candidate_snapshot": pending_card.model_dump() if pending_card else {},
+                            "recommended_table_ids": list(getattr(pending_card, "recommended_table_ids", []) or []),
+                            "selected_table_ids": selected_table_ids,
+                        },
+                    )
+                    return pending_response
                 elif table_selection_result.get("status") == "success":
                     actual_connection_id = table_selection_result.get("connection_id")
                     effective_selected_table_id = table_selection_result.get("selected_table_id")
+                    candidate_snapshot = table_selection_result.get("candidate_snapshot")
                     # 获取多表选择结果（跨年查询时可能有多个表）
                     result_table_ids = table_selection_result.get("selected_table_ids", [])
                     if result_table_ids:
@@ -734,12 +888,18 @@ async def query(
                     })
                     await _stream_error(stream, error_info)
                     tracer.finalize()
-                    return QueryResponse(
+                    return await _return_query_response(
+                        QueryResponse(
                         status="error",
                         error=error_info,
                         auth_status=auth_status,
                         query_id=query_id,
                         timestamp=timestamp
+                        ),
+                        status="failed",
+                        current_node="table_resolution",
+                        state_updates={"selected_table_ids": selected_table_ids},
+                        last_error=error_info.get("message"),
                     )
             else:
                 # LLM表选择关闭时，不要直接报错，让第二条链路（向量检索+LLM3）来处理
@@ -753,12 +913,18 @@ async def query(
             tracer.finalize()
             error_info = {"code": "AUTO_DETECT_ERROR", "message": f"自动检测数据库连接失败: {str(e)}"}
             await _stream_error(stream, error_info)
-            return QueryResponse(
+            return await _return_query_response(
+                QueryResponse(
                 status="error",
                 error=error_info,
                 auth_status=auth_status,
                 query_id=query_id,
                 timestamp=timestamp
+                ),
+                status="failed",
+                current_node="table_resolution",
+                state_updates={"selected_table_ids": selected_table_ids},
+                last_error=error_info["message"],
             )
     
     # 情况2：已指定 connection_id，但未选择表，需要单连接 LLM 表选择
@@ -781,9 +947,22 @@ async def query(
         if table_selection_result.get("status") == "need_confirmation":
             # 暂停 trace（不立即保存，等待用户确认后续接继续追踪）
             tracer.finalize({"status": "table_selection_needed"}, save_to_file=False)
-            return table_selection_result.get("response")
+            pending_response = table_selection_result.get("response")
+            pending_card = pending_response.table_selection if pending_response else None
+            await _update_query_session(
+                status="awaiting_user_action",
+                current_node="table_resolution",
+                state_updates={
+                    "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
+                    "candidate_snapshot": pending_card.model_dump() if pending_card else {},
+                    "recommended_table_ids": list(getattr(pending_card, "recommended_table_ids", []) or []),
+                    "selected_table_ids": selected_table_ids,
+                },
+            )
+            return pending_response
         elif table_selection_result.get("status") == "success":
             effective_selected_table_id = table_selection_result.get("selected_table_id")
+            candidate_snapshot = table_selection_result.get("candidate_snapshot")
             # 获取多表选择结果（跨年查询时可能有多个表）
             result_table_ids = table_selection_result.get("selected_table_ids", [])
             if result_table_ids:
@@ -815,17 +994,38 @@ async def query(
             })
             await _stream_error(stream, error_info)
             tracer.finalize()
-            return QueryResponse(
+            return await _return_query_response(
+                QueryResponse(
                 status="error",
                 error=error_info,
                 auth_status=auth_status,
-                            query_id=query_id,
+                query_id=query_id,
                 timestamp=timestamp
+                ),
+                status="failed",
+                current_node="table_resolution",
+                state_updates={"selected_table_ids": selected_table_ids},
+                last_error=error_info.get("message"),
             )
     
     # 更新 tracer 的 connection_id
     tracer.connection_id = actual_connection_id
-    
+    table_resolution_state_updates = {
+        "connection_id": actual_connection_id,
+        "selected_table_ids": selected_table_ids,
+        "selected_table_id": effective_selected_table_id,
+        "cross_partition_mode": cross_partition_mode,
+        "is_cross_partition_query": is_cross_partition_query,
+        "recommended_table_ids": selected_table_ids,
+    }
+    if candidate_snapshot:
+        table_resolution_state_updates["candidate_snapshot"] = candidate_snapshot
+    await _update_query_session(
+        status="running",
+        current_node="table_resolved",
+        state_updates=table_resolution_state_updates,
+    )
+
     # ========== 记录表选择状态 ==========
     # 如果用户请求中已带有 selected_table_id，说明这是用户确认LLM表选择结果后的请求
     # 需要记录表的基本信息，以便追踪
@@ -1201,7 +1401,8 @@ async def query(
                         
                         # 返回错误响应
                         tracer.finalize({"status": "error", "reason": "no_tables_found"})
-                        return QueryResponse(
+                        return await _return_query_response(
+                            QueryResponse(
                             status="error",
                             error={
                                 "code": "NO_TABLES_FOUND",
@@ -1210,6 +1411,10 @@ async def query(
                             auth_status=auth_status,
                             query_id=query_id,
                             timestamp=timestamp
+                            ),
+                            status="failed",
+                            current_node="table_resolution",
+                            last_error="未找到相关数据表，请检查问题描述或确保已同步元数据。",
                         )
                     else:
                         # 3. 加载表的完整字段信息
@@ -1248,7 +1453,8 @@ async def query(
                             
                             # 返回错误响应
                             tracer.finalize({"status": "error", "reason": "field_load_failed"})
-                            return QueryResponse(
+                            return await _return_query_response(
+                                QueryResponse(
                                 status="error",
                                 error={
                                     "code": "FIELD_LOAD_FAILED",
@@ -1256,6 +1462,10 @@ async def query(
                                 },
                                 query_id=query_id,
                                 timestamp=timestamp
+                                ),
+                                status="failed",
+                                current_node="table_resolution",
+                                last_error="加载表字段信息失败，请稍后重试。",
                             )
                         else:
                             # 4. 构建检索辅助信息（使用步骤2.1获取的enum_matches）
@@ -1508,6 +1718,11 @@ async def query(
                                     actual_connection_id = selected_table.connection_id
                                 
                                 effective_selected_table_id = selection_result.selected_table_id
+                                candidate_snapshot = _build_vector_fallback_selection_card(
+                                    tables_with_fields=tables_with_fields,
+                                    question=request.text,
+                                    fallback_reason="ir_vote_failed",
+                                ).model_dump()
                                 
                                 await _stream_progress(stream, step_name, "success", "IR投票验证通过，直接执行", {
                                     "confidence": confidence,
@@ -1572,6 +1787,11 @@ async def query(
                                         actual_connection_id = selected_table.connection_id
                                     
                                     effective_selected_table_id = selection_result.selected_table_id
+                                    candidate_snapshot = _build_vector_fallback_selection_card(
+                                        tables_with_fields=tables_with_fields,
+                                        question=request.text,
+                                        fallback_reason="low_confidence",
+                                    ).model_dump()
                                     
                                     await _stream_progress(stream, step_name, "success", "LLM3直接生成IR", {
                                         "confidence": confidence,
@@ -1620,12 +1840,23 @@ async def query(
                                     "reason": "ir_vote_failed",
                                     "candidate_count": len(fallback_card.candidates)
                                 })
-                                return QueryResponse(
+                                pending_response = QueryResponse(
                                     status="table_selection_needed",
                                     table_selection=fallback_card,
                                     query_id=query_id,
                                     timestamp=timestamp
                                 )
+                                await _update_query_session(
+                                    status="awaiting_user_action",
+                                    current_node="table_resolution",
+                                    state_updates={
+                                        "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
+                                        "candidate_snapshot": fallback_card.model_dump(),
+                                        "recommended_table_ids": list(fallback_card.recommended_table_ids or []),
+                                        "selected_table_ids": selected_table_ids,
+                                    },
+                                )
+                                return pending_response
                                     
                             else:
                                 # IR投票未通过 + 低置信度：同样降级到表选择确认流程
@@ -1656,12 +1887,23 @@ async def query(
                                     "reason": "low_confidence",
                                     "candidate_count": len(fallback_card.candidates)
                                 })
-                                return QueryResponse(
+                                pending_response = QueryResponse(
                                     status="table_selection_needed",
                                     table_selection=fallback_card,
                                     query_id=query_id,
                                     timestamp=timestamp
                                 )
+                                await _update_query_session(
+                                    status="awaiting_user_action",
+                                    current_node="table_resolution",
+                                    state_updates={
+                                        "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
+                                        "candidate_snapshot": fallback_card.model_dump(),
+                                        "recommended_table_ids": list(fallback_card.recommended_table_ids or []),
+                                        "selected_table_ids": selected_table_ids,
+                                    },
+                                )
+                                return pending_response
                         
                 except Exception as e:
                     logger.exception("向量表选择失败", error=str(e))
@@ -1671,7 +1913,8 @@ async def query(
                     
                     # 返回错误响应
                     tracer.finalize({"status": "error", "reason": "vector_selection_failed"})
-                    return QueryResponse(
+                    return await _return_query_response(
+                        QueryResponse(
                         status="error",
                         error={
                             "code": "VECTOR_SELECTION_FAILED",
@@ -1679,6 +1922,11 @@ async def query(
                         },
                         query_id=query_id,
                         timestamp=timestamp
+                        ),
+                        status="failed",
+                        current_node="table_resolution",
+                        state_updates={"selected_table_ids": selected_table_ids},
+                        last_error=str(e),
                     )
             else:
                 ir_from_llm3 = False
@@ -1894,12 +2142,17 @@ async def query(
                 }
                 await _stream_error(stream, error_info)
                 tracer.finalize()
-                return QueryResponse(
+                return await _return_query_response(
+                    QueryResponse(
                     status="error",
                     error=error_info,
                     auth_status=auth_status,
-                            query_id=query_id,
+                    query_id=query_id,
                     timestamp=timestamp
+                    ),
+                    status="failed",
+                    current_node="permission_resolution",
+                    last_error=error_info["message"],
                 )
             except CrossConnectionNotSupported as e:
                 step.set_error(str(e))
@@ -1910,12 +2163,17 @@ async def query(
                 }
                 await _stream_error(stream, error_info)
                 tracer.finalize()
-                return QueryResponse(
+                return await _return_query_response(
+                    QueryResponse(
                     status="error",
                     error=error_info,
                     auth_status=auth_status,
-                            query_id=query_id,
+                    query_id=query_id,
                     timestamp=timestamp
+                    ),
+                    status="failed",
+                    current_node="permission_resolution",
+                    last_error=error_info["message"],
                 )
             except Exception as e:
                 step.set_error(str(e))
@@ -1931,12 +2189,17 @@ async def query(
             }
             await _stream_error(stream, error_info)
             tracer.finalize()
-            return QueryResponse(
+            return await _return_query_response(
+                QueryResponse(
                 status="error",
                 error=error_info,
                 auth_status=auth_status,
-                            query_id=query_id,
+                query_id=query_id,
                 timestamp=timestamp
+                ),
+                status="failed",
+                current_node="connection_resolution",
+                last_error=error_info["message"],
             )
 
         # 2.5 Schema Linking 校正
@@ -2016,7 +2279,12 @@ async def query(
                         timestamp=timestamp
                     )
                     await _stream_error(stream, response.error or {})
-                    return response
+                    return await _return_query_response(
+                        response,
+                        status="failed",
+                        current_node="permission_guard",
+                        last_error=error_message,
+                    )
                 
                 if permission_info.get("applied"):
                     await _stream_progress(stream, step_name, "success", step_desc, {
@@ -2316,7 +2584,18 @@ async def query(
                         )
                         await _stream_result(stream, query_id, timestamp, cached_result)
                         result_streamed = True
-                        return response
+                        return await _return_query_response(
+                            response,
+                            status="completed",
+                            current_node="completed",
+                            state_updates={
+                                "cache_hit": True,
+                                "ir_ready": True,
+                                "selected_table_ids": selected_table_ids,
+                                "selected_table_id": effective_selected_table_id,
+                                "ir_snapshot": sanitize_for_json(ir.model_dump()) if hasattr(ir, "model_dump") else None,
+                            },
+                        )
 
                     step.set_output({"hit": False})
                 except Exception as e:
@@ -2412,7 +2691,18 @@ async def query(
                 )
                 await _stream_result(stream, query_id, timestamp, explain_result)
                 result_streamed = True
-                return response
+                return await _return_query_response(
+                    response,
+                    status="completed",
+                    current_node="ir_ready",
+                    state_updates={
+                        "ir_ready": True,
+                        "selected_table_ids": selected_table_ids,
+                        "selected_table_id": effective_selected_table_id,
+                        "sql_preview": sql,
+                        "ir_snapshot": sanitize_for_json(ir.model_dump()),
+                    },
+                )
 
             # 7. 成本守护（SHOWPLAN）
             # 延迟初始化：在成本守护/执行前创建 executor
@@ -2458,7 +2748,17 @@ async def query(
                         timestamp=timestamp
                     )
                     await _stream_confirmation(stream, confirm_card)
-                    return response
+                    return await _return_query_response(
+                        response,
+                        status="awaiting_user_action",
+                        current_node="execution_guard",
+                        state_updates={
+                            "pending_actions": ["execution_decision", "request_explanation", "exit_current"],
+                            "execution_guard": sanitize_for_json(confirm_card.model_dump()),
+                            "ir_snapshot": sanitize_for_json(ir.model_dump()),
+                            "ir_ready": True,
+                        },
+                    )
 
             # 8. 执行查询
             # 检查停止信号（执行前最后确认）
@@ -3524,9 +3824,18 @@ async def query(
             result_streamed = True
 
         # 使用自定义序列化返回
-        return JSONResponse(
-            content=json.loads(response.model_dump_json()),
-            media_type="application/json"
+        return await _return_json_query_response(
+            response,
+            status="completed",
+            current_node="completed",
+            state_updates={
+                "ir_ready": True,
+                "selected_table_ids": selected_table_ids,
+                "selected_table_id": effective_selected_table_id,
+                "sql_preview": sql if 'sql' in locals() else None,
+                "ir_snapshot": sanitize_for_json(ir.model_dump()) if 'ir' in locals() and hasattr(ir, "model_dump") else None,
+                "result_meta": result.meta if result else None,
+            },
         )
     except QueryStoppedException as e:
         # 查询被用户取消
@@ -3542,6 +3851,15 @@ async def query(
             "message_id": e.message_id,
             "cancelled_at_step": tracer.current_step.step_name if tracer.current_step else None
         })
+        await _update_query_session(
+            status="cancelled",
+            current_node="cancelled",
+            state_updates={
+                "cancel_reason": e.reason,
+                "cancelled_at_step": tracer.current_step.step_name if tracer.current_step else None,
+            },
+            last_error=e.reason,
+        )
 
         # 重新抛出，让上层处理
         raise
@@ -3594,10 +3912,61 @@ async def query(
                 timestamp=timestamp
             )
         await _stream_error(stream, response.error or {})
-        return JSONResponse(
-            content=json.loads(response.model_dump_json()),
-            media_type="application/json"
+        return await _return_json_query_response(
+            response,
+            status="failed",
+            current_node="failed",
+            state_updates={"selected_table_ids": selected_table_ids if 'selected_table_ids' in locals() else []},
+            last_error=(response.error or {}).get("message") if response.error else str(e),
         )
+
+
+@router.get("/query-sessions/{query_id}")
+async def get_query_session_snapshot(query_id: str):
+    session_service = QuerySessionService()
+    session = await session_service.get_session(UUID(query_id))
+    if not session:
+        raise HTTPException(status_code=404, detail="查询会话不存在")
+
+    state = session.get("state_json") or {}
+    return {
+        "query_id": session["query_id"],
+        "status": session["status"],
+        "current_node": session["current_node"],
+        "pending_actions": state.get("pending_actions", []),
+        "state": state,
+        "session": session,
+    }
+
+
+@router.post("/query-sessions/{query_id}/actions")
+async def submit_query_session_action(
+    query_id: str,
+    request: QuerySessionActionRequest,
+    current_user: Optional[AdminUser] = Depends(get_optional_user),
+):
+    actor_type = request.actor_type
+    actor_id = request.actor_id
+    if current_user:
+        actor_id = str(current_user.user_id)
+        actor_type = "user"
+
+    service = DraftActionService()
+    try:
+        result = await service.apply_action(
+            query_id=UUID(query_id),
+            action_type=request.action_type,
+            payload=request.payload,
+            natural_language_reply=request.natural_language_reply,
+            draft_version=request.draft_version,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            idempotency_key=request.idempotency_key,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return result
 
 
 @router.websocket("/query/stream")
@@ -3606,8 +3975,7 @@ async def query_stream_socket(websocket: WebSocket):
     await websocket.accept()
     cache = get_query_cache()
     emitter = QueryStreamEmitter(websocket)
-    query_id = str(uuid.uuid4())
-    emitter.bind_query(query_id)
+    query_id: Optional[str] = None
     
     # 用于检查取消状态的变量
     query_cancelled = False
@@ -3642,6 +4010,9 @@ async def query_stream_socket(websocket: WebSocket):
         })
         await emitter.close()
         return
+
+    query_id = request.original_query_id or str(uuid.uuid4())
+    emitter.bind_query(query_id)
 
     # 从WebSocket请求中尝试获取用户信息（如果前端传递了token）
     current_user = None
@@ -3822,6 +4193,7 @@ async def query_stream_socket(websocket: WebSocket):
     cancel_check_task = asyncio.create_task(check_cancel())
 
     ws_token = _stream_emitter_ctx.set(emitter)
+    query_id_token = _query_id_ctx.set(query_id)
     query_error = None
     is_stopped_by_signal = False
     try:
@@ -3918,6 +4290,7 @@ async def query_stream_socket(websocket: WebSocket):
         })
     finally:
         _stream_emitter_ctx.reset(ws_token)
+        _query_id_ctx.reset(query_id_token)
         cancel_check_task.cancel()
         try:
             await cancel_check_task

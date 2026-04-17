@@ -151,6 +151,25 @@ class QueryResponse(BaseModel):
     timestamp: str
 
 
+class QuerySessionActionRequest(BaseModel):
+    """查询会话动作请求"""
+    action_type: Optional[Literal[
+        "confirm",
+        "revise",
+        "change_table",
+        "choose_option",
+        "request_explanation",
+        "execution_decision",
+        "exit_current",
+    ]] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    natural_language_reply: Optional[str] = None
+    draft_version: Optional[int] = None
+    actor_type: str = "user"
+    actor_id: str = "anonymous"
+    idempotency_key: Optional[str] = None
+
+
 class AccessibleTableItem(BaseModel):
     """用户可访问的表信息（用于展开全部功能）"""
     table_id: str
@@ -173,4 +192,3 @@ class AccessibleTablesResponse(BaseModel):
     total: int
     is_admin: bool = False
     has_all_access: bool = False
-

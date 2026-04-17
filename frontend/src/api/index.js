@@ -330,6 +330,17 @@ export const conversationAPI = {
 }
 
 // ============================================================================
+// 查询会话确认流
+// ============================================================================
+export const querySessionAPI = {
+  // 获取查询会话快照
+  get: (queryId) => request.get(`/query-sessions/${queryId}`),
+
+  // 提交确认阶段动作
+  submitAction: (queryId, data) => request.post(`/query-sessions/${queryId}/actions`, data)
+}
+
+// ============================================================================
 // 系统管理
 // ============================================================================
 export const systemAPI = {
@@ -700,6 +711,7 @@ export default {
   organization: organizationAPI,
   query: queryAPI,
   conversation: conversationAPI,
+  querySession: querySessionAPI,
   system: systemAPI,
   modelProvider: modelProviderAPI,
   scenarioConfig: scenarioConfigAPI,

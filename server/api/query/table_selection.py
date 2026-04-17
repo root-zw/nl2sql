@@ -17,6 +17,46 @@ from .stream_emitter import QueryStreamEmitter, stream_progress, stream_table_se
 logger = structlog.get_logger()
 
 
+def _build_selection_snapshot_card(
+    question: str,
+    candidates: List[TableCandidate],
+    is_multi_table_query: bool,
+    multi_table_mode: str,
+    multi_table_hint: Optional[str],
+    recommended_table_ids: List[str],
+) -> TableSelectionCard:
+    """为自动选表成功场景保留候选快照，供后续“换表重试”使用。"""
+    total_candidates_limit = settings.llm_table_selection_total_candidates
+    page_size = settings.llm_table_selection_max_candidates
+    meaningful_candidates = [candidate for candidate in candidates if candidate.confidence > 0][:total_candidates_limit]
+
+    allow_multi = is_multi_table_query and multi_table_mode in (
+        "compare", "union", "multi_join",
+        "cross_year", "cross_partition", "cross_year_compare", "cross_year_union",
+    )
+
+    if allow_multi and multi_table_hint:
+        message = multi_table_hint
+        confirmation_reason = "系统已自动完成多表选择，如需调整可重新确认数据表"
+    else:
+        message = "系统已自动选择高置信度数据表，如有偏差可重新确认："
+        confirmation_reason = "当前为高置信度自动选表，若结果不符可点击“不是这张表”重新选择"
+
+    return TableSelectionCard(
+        candidates=meaningful_candidates,
+        question=question,
+        message=message,
+        confirmation_reason=confirmation_reason,
+        allow_multi_select=allow_multi,
+        multi_table_mode=multi_table_mode if allow_multi else None,
+        page_size=page_size,
+        total_candidates=len(meaningful_candidates),
+        is_cross_year_query=multi_table_mode in ("compare", "union", "cross_year", "cross_year_compare", "cross_year_union"),
+        cross_year_hint=multi_table_hint,
+        recommended_table_ids=recommended_table_ids,
+    )
+
+
 
 
 async def llm_select_table(
@@ -299,6 +339,14 @@ async def llm_select_table(
         recommended_table_ids = selection_result.recommended_table_ids or [primary_table_id]
         is_multi_table = selection_result.is_multi_table_query
         multi_table_mode = selection_result.multi_table_mode
+        candidate_snapshot = _build_selection_snapshot_card(
+            question=question,
+            candidates=selection_result.candidates,
+            is_multi_table_query=is_multi_table,
+            multi_table_mode=multi_table_mode,
+            multi_table_hint=selection_result.multi_table_hint,
+            recommended_table_ids=recommended_table_ids,
+        )
 
         # 从元数据中获取 connection_id
         selected_table_meta = next(
@@ -387,7 +435,8 @@ async def llm_select_table(
             "selected_table_id": primary_table_id,
             "selected_table_ids": recommended_table_ids,  # 新增：返回多个表ID
             "is_multi_table_query": is_multi_table,
-            "multi_table_mode": multi_table_mode
+            "multi_table_mode": multi_table_mode,
+            "candidate_snapshot": candidate_snapshot.model_dump(),
         }
         
     except Exception as e:
@@ -475,4 +524,3 @@ async def llm_select_table_cross_connections(
         query_id=query_id,
         timestamp=timestamp
     )
-

@@ -18,6 +18,26 @@
 
 本文档不代表这些能力当前已经落地；它是基于当前代码现状、已有 RFC 和讨论结论形成的开发前置方案。
 
+## 2.1 2026-04-17 实施校正
+
+本轮改造后，以下内容已经不再只是设计稿：
+
+- `query_sessions` 已落地，并提供 `GET /api/query-sessions/{query_id}`
+- `draft_actions` 已落地，并提供 `POST /api/query-sessions/{query_id}/actions`
+- `Chat.vue` 已接入统一确认容器
+  - 确认阶段按钮动作走 `draft_actions`
+  - 确认阶段输入框自由回复也走 `draft_actions`
+  - 结果态已提供“不是这张表，重新选表”按钮
+- 高置信度自动选表成功后，后端会保留 `candidate_snapshot`
+  - 用户可在后续把当前表推翻并回退到 `table_resolution`
+
+但以下内容仍然只是目标态，不应误读为已完成：
+
+- 显式 `query_drafts`
+- `learning_events` / `runtime_memories` / `governance_candidates`
+- LangGraph / 独立 Skills Runtime
+- 真正完整的 `draft_confirmation` 自动重写闭环
+
 ## 3. 当前代码事实确认
 
 ### 3.1 当前稳定在线的两类确认
@@ -29,7 +49,7 @@
 
 当前并没有完整落地的“统一语义级 Query Draft 确认”。
 
-### 3.2 当前前后端确认协议仍然分裂
+### 3.2 当前前后端确认协议已进入“后端统一、前端兼容过渡”阶段
 
 当前响应状态仍以以下枚举为主：
 
@@ -38,12 +58,18 @@
 - `table_selection_needed`
 - `error`
 
-当前前端 `Chat.vue` 也仍分别维护：
+当前前端已经新增基于 `query_sessions` 的统一确认容器，但仍保留：
 
 - `pendingTableSelection`
 - `pendingConfirm`
 
-这意味着现状仍是“两套确认 UI / 两套状态”的结构，而不是统一确认对象。
+作为兼容回退。
+
+因此截至 2026-04-17，更准确的判断是：
+
+- 后端状态与动作协议已经统一
+- 前端主路径已经统一到 `query_sessions`
+- 旧的两套确认状态仍保留为 fallback，而不是主协议
 
 ### 3.3 当前 LLM 选表路径是可走通的
 

@@ -1339,6 +1339,48 @@ CREATE INDEX IF NOT EXISTS idx_active_queries_conversation
 
 COMMENT ON TABLE active_queries IS '活跃查询状态表';
 
+CREATE TABLE IF NOT EXISTS query_sessions (
+    query_id UUID PRIMARY KEY,
+    conversation_id UUID REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+    message_id UUID REFERENCES conversation_messages(message_id) ON DELETE SET NULL,
+    user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    status VARCHAR(32) NOT NULL,
+    current_node VARCHAR(64) NOT NULL,
+    state_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_error TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_sessions_user_status
+    ON query_sessions(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_query_sessions_conversation
+    ON query_sessions(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_query_sessions_updated
+    ON query_sessions(updated_at DESC);
+
+COMMENT ON TABLE query_sessions IS '查询会话状态表';
+
+CREATE TABLE IF NOT EXISTS draft_actions (
+    action_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    query_id UUID NOT NULL REFERENCES query_sessions(query_id) ON DELETE CASCADE,
+    draft_id UUID,
+    draft_version INT,
+    action_type VARCHAR(64) NOT NULL,
+    actor_type VARCHAR(32) NOT NULL,
+    actor_id VARCHAR(128) NOT NULL,
+    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    idempotency_key VARCHAR(128) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_draft_actions_query_idempotency
+    ON draft_actions(query_id, idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_draft_actions_query_created
+    ON draft_actions(query_id, created_at DESC);
+
+COMMENT ON TABLE draft_actions IS '查询动作时间线表';
+
 -- ============================================================================
 -- 初始化数据
 -- ============================================================================
@@ -1415,6 +1457,9 @@ CREATE TRIGGER update_conversations_updated_at BEFORE UPDATE ON conversations
  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_conversation_messages_updated_at BEFORE UPDATE ON conversation_messages
+ FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_query_sessions_updated_at BEFORE UPDATE ON query_sessions
  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 DROP TRIGGER IF EXISTS update_few_shot_samples_updated_at ON qa_few_shot_samples;
