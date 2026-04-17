@@ -324,6 +324,7 @@ class Settings(BaseSettings):
     cache_key_prefix: str = Field(default="NL2SQL:", alias="CACHE_KEY_PREFIX")
     
     # === 确认卡触发策略 ===
+    confirmation_mode: str = Field(default="always_confirm", alias="CONFIRMATION_MODE")
     enable_complex_query_auto_execution: bool = Field(default=True, alias="ENABLE_COMPLEX_QUERY_AUTO_EXECUTION")
     confirm_time_span_days: int = Field(default=90, alias="CONFIRM_TIME_SPAN_DAYS")
     confirm_sensitive_metrics: str = Field(default="revenue,profit,salary", alias="CONFIRM_SENSITIVE_METRICS")

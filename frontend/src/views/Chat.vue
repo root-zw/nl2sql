@@ -469,6 +469,14 @@
                         手动选表
                       </button>
                       <button
+                        v-if="canUsePendingAction('revise')"
+                        class="btn-secondary"
+                        @click="focusPendingReplyInput('请修改为：')"
+                        :disabled="pendingSessionActionLoading"
+                      >
+                        继续修改
+                      </button>
+                      <button
                         v-if="canUsePendingAction('request_explanation')"
                         class="btn-secondary"
                         @click="requestPendingExplanation"
@@ -510,6 +518,22 @@
                         ✓ 确认执行
                       </button>
                       <button
+                        v-if="canUsePendingAction('change_table')"
+                        class="btn-secondary"
+                        @click="requestTableReselection"
+                        :disabled="pendingSessionActionLoading"
+                      >
+                        重新选表
+                      </button>
+                      <button
+                        v-if="canUsePendingAction('revise')"
+                        class="btn-secondary"
+                        @click="focusPendingReplyInput('请修改为：')"
+                        :disabled="pendingSessionActionLoading"
+                      >
+                        继续修改
+                      </button>
+                      <button
                         v-if="canUsePendingAction('request_explanation')"
                         class="btn-secondary"
                         @click="requestPendingExplanation"
@@ -532,13 +556,25 @@
                       <p class="section-label">📝 修改意见：</p>
                       <div class="user-question-text">{{ pendingRevisionNote }}</div>
                     </div>
+                    <div v-if="pendingConfirm?.warnings?.length" class="warnings-section">
+                      <p class="warnings-label">⚡ 提示：</p>
+                      <div v-for="(w, i) in pendingConfirm.warnings" :key="i" class="warning-tag">{{ w }}</div>
+                    </div>
                     <div class="confirm-actions session-actions">
                       <button
                         class="btn-confirm"
                         @click="confirmDraftRevision"
                         :disabled="pendingSessionActionLoading"
                       >
-                        ✓ 继续生成
+                        ✓ 确认当前草稿
+                      </button>
+                      <button
+                        v-if="canUsePendingAction('revise')"
+                        class="btn-secondary"
+                        @click="focusPendingReplyInput('请修改为：')"
+                        :disabled="pendingSessionActionLoading"
+                      >
+                        继续修改
                       </button>
                       <button
                         class="btn-secondary"
@@ -546,6 +582,14 @@
                         :disabled="pendingSessionActionLoading"
                       >
                         重新选表
+                      </button>
+                      <button
+                        v-if="canUsePendingAction('request_explanation')"
+                        class="btn-secondary"
+                        @click="requestPendingExplanation"
+                        :disabled="pendingSessionActionLoading"
+                      >
+                        解释一下
                       </button>
                       <button
                         class="btn-cancel"
@@ -1027,14 +1071,14 @@ const pendingSessionNode = computed(() => {
 const pendingSessionTitle = computed(() => {
   if (pendingSessionNode.value === 'table_resolution') return '请确认要使用的数据表'
   if (pendingSessionNode.value === 'execution_guard') return '请确认是否执行查询'
-  if (pendingSessionNode.value === 'draft_confirmation') return '请确认当前修改方案'
+  if (pendingSessionNode.value === 'draft_confirmation') return '请确认当前查询草稿'
   return '请确认当前操作'
 })
 
 const pendingSessionNodeLabel = computed(() => {
   if (pendingSessionNode.value === 'table_resolution') return '选表确认'
   if (pendingSessionNode.value === 'execution_guard') return '执行确认'
-  if (pendingSessionNode.value === 'draft_confirmation') return '修改确认'
+  if (pendingSessionNode.value === 'draft_confirmation') return '草稿确认'
   return '确认中'
 })
 
@@ -1058,7 +1102,7 @@ const pendingSessionSummaryText = computed(() => {
     return pendingConfirm.value?.natural_language || '该查询可能扫描较大数据量，请确认是否继续执行。'
   }
   if (pendingSessionNode.value === 'draft_confirmation') {
-    return '已记录您的修改意见，请确认是否按当前版本继续生成。'
+    return pendingConfirm.value?.natural_language || '系统已生成新的查询草稿，请确认是否继续。'
   }
   return ''
 })
@@ -1218,7 +1262,7 @@ function applyPendingSessionSnapshot(payload, options = {}) {
     selectedTableId.value = stateSelected[0] || null
     resetPendingTableUi()
   } else if (snapshot.current_node === 'draft_confirmation') {
-    pendingConfirm.value = snapshot.state?.execution_guard || options.fallbackConfirmation || null
+    pendingConfirm.value = snapshot.state?.draft_confirmation_card || options.fallbackConfirmation || null
     pendingTableSelection.value = snapshot.state?.candidate_snapshot || options.fallbackTableSelection || null
     const nextSelectedTableIds = getDefaultSelectedTableIds(pendingTableSelection.value, snapshot.state || {}, options)
     selectedTableIds.value = nextSelectedTableIds
@@ -1366,9 +1410,10 @@ function buildPendingExplanation(snapshot = pendingSessionSnapshot.value) {
   }
 
   if (currentSnapshot.current_node === 'draft_confirmation') {
-    return pendingRevisionNote.value
-      ? `当前已记录修改意见：${pendingRevisionNote.value}`
-      : '当前处于修改确认阶段，请确认是否继续。'
+    return [
+      pendingConfirm.value?.natural_language || '',
+      pendingRevisionNote.value ? `当前已记录修改意见：${pendingRevisionNote.value}` : ''
+    ].filter(Boolean).join('\n\n') || '当前处于草稿确认阶段，请确认是否继续。'
   }
 
   return '当前确认原因已记录。'
@@ -1608,7 +1653,8 @@ async function executeQueryViaWebSocket(text, assistantMessageId, options = {}) 
   
   ws.onopen = () => {
     const payload = {
-      text: text,
+      text: text || null,
+      ir: options.ir || null,
       user_id: currentUser.value?.user_id || 'anonymous',
       role: currentUser.value?.role || 'viewer',
       connection_id: selectedConnection.value || null,
@@ -1951,13 +1997,14 @@ function findMessage(messageId) {
 
 async function continueQueryFromPendingState({
   text,
+  ir = null,
   queryId,
   selectedTableIds: continuationTableIds = [],
   multiTableMode = null,
   forceExecute = false,
   progressText = '思考中...'
 }) {
-  if (!text || !queryId) {
+  if ((!text && !ir) || !queryId) {
     ElMessage.error('缺少原始查询上下文，无法继续执行。')
     return
   }
@@ -1966,6 +2013,7 @@ async function continueQueryFromPendingState({
   prepareAssistantPlaceholder(assistantMessageId, progressText)
   clearPendingSessionState({ keepQueryText: true })
   await executeQueryViaWebSocket(text, assistantMessageId, {
+    ir,
     selectedTableIds: continuationTableIds,
     multiTableMode,
     originalQueryId: queryId,
@@ -2007,20 +2055,23 @@ async function submitPendingSessionAction({
     const currentState = snapshot?.state || {}
 
     if (result?.action?.action_type === 'confirm' && snapshot?.current_node === 'draft_generation') {
+      const resumeIr = currentState.draft_confirmation_approved ? (currentState.ir_snapshot || null) : null
       await continueQueryFromPendingState({
-        text: currentState.question_text || pendingQueryText.value,
+        text: currentState.resolved_question_text || currentState.question_text || pendingQueryText.value,
+        ir: resumeIr,
         queryId: snapshot.query_id || queryId,
         selectedTableIds: currentState.selected_table_ids || selectedTableIds.value,
         multiTableMode: currentState.multi_table_mode || pendingTableSelection.value?.multi_table_mode || currentState.candidate_snapshot?.multi_table_mode || null,
         forceExecute: false,
-        progressText: '正在使用确认后的表继续查询...'
+        progressText: resumeIr ? '正在基于已确认草稿继续查询...' : '正在使用确认后的表继续查询...'
       })
       return result
     }
 
     if (result?.action?.action_type === 'execution_decision' && snapshot?.current_node === 'execution_approved') {
       await continueQueryFromPendingState({
-        text: currentState.question_text || pendingQueryText.value,
+        text: currentState.resolved_question_text || currentState.question_text || pendingQueryText.value,
+        ir: currentState.ir_snapshot || null,
         queryId: snapshot.query_id || queryId,
         selectedTableIds: currentState.selected_table_ids || selectedTableIds.value,
         multiTableMode: currentState.multi_table_mode || currentState.candidate_snapshot?.multi_table_mode || null,
@@ -2045,7 +2096,18 @@ async function submitPendingSessionAction({
     }
 
     if (result?.action?.action_type === 'revise') {
-      appendAssistantInfoMessage('修改意见已记录，但“自动重写确认稿”链路尚未完全接通。当前仍停留在确认阶段，您可以继续确认、换表，或补充更完整的修改说明。')
+      if (snapshot?.current_node === 'draft_generation') {
+        await continueQueryFromPendingState({
+          text: currentState.question_text || pendingQueryText.value,
+          queryId: snapshot.query_id || queryId,
+          selectedTableIds: currentState.selected_table_ids || selectedTableIds.value,
+          multiTableMode: currentState.multi_table_mode || pendingTableSelection.value?.multi_table_mode || currentState.candidate_snapshot?.multi_table_mode || null,
+          forceExecute: false,
+          progressText: '正在根据修改意见重算确认稿...'
+        })
+        return result
+      }
+      appendAssistantInfoMessage('修改意见已记录，请继续确认。')
       return result
     }
 
@@ -2189,6 +2251,15 @@ function closeWebSocket() {
 function setQueryText(text) {
   queryText.value = text
   inputTextarea.value?.focus()
+}
+
+function focusPendingReplyInput(seedText = '') {
+  if (seedText && !queryText.value.trim()) {
+    queryText.value = seedText
+  }
+  nextTick(() => {
+    inputTextarea.value?.focus()
+  })
 }
 
 // 自动调整文本框高度

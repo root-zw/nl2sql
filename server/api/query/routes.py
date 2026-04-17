@@ -106,6 +106,10 @@ from .table_selection import (
 from .derived_metrics import (
     build_derived_metrics_explanation as _build_derived_metrics_explanation,
 )
+from .confirmation_utils import (
+    build_draft_confirmation_summary as _build_draft_confirmation_summary,
+    compose_question_with_revision as _compose_question_with_revision,
+)
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -140,6 +144,36 @@ def _try_uuid(value: Optional[str]) -> Optional[UUID]:
         return UUID(str(value))
     except (TypeError, ValueError):
         return None
+
+
+async def _load_table_display_names(table_ids: List[str]) -> List[str]:
+    valid_ids: List[UUID] = []
+    for table_id in table_ids:
+        try:
+            valid_ids.append(UUID(str(table_id)))
+        except (TypeError, ValueError):
+            continue
+
+    if not valid_ids:
+        return []
+
+    pool = await get_metadata_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT table_id::text AS table_id, display_name
+            FROM db_tables
+            WHERE table_id = ANY($1::uuid[])
+            """,
+            valid_ids,
+        )
+
+    name_map = {
+        str(row["table_id"]): row["display_name"]
+        for row in rows
+        if row.get("display_name")
+    }
+    return [name_map[str(table_id)] for table_id in table_ids if str(table_id) in name_map]
 
 
 async def _check_stop_signal(step_name: str = ""):
@@ -539,6 +573,23 @@ async def query(
     start_time = time.time()  # 记录开始时间
     result_streamed = False
     query_session_service = QuerySessionService()
+    existing_session = None
+    existing_state: Dict[str, Any] = {}
+    query_uuid = _try_uuid(query_id)
+    if query_uuid is not None:
+        try:
+            existing_session = await query_session_service.get_session(query_uuid)
+            existing_state = dict(existing_session.get("state_json") or {}) if existing_session else {}
+        except Exception as exc:
+            logger.warning("读取既有 query_session 失败", query_id=query_id, error=str(exc))
+    confirmation_mode = existing_state.get("confirmation_mode") or settings.confirmation_mode
+    revision_request = existing_state.get("revision_request")
+    if request.ir and existing_state.get("resolved_question_text"):
+        effective_question_text = existing_state.get("resolved_question_text")
+    elif request.text and existing_state.get("draft_confirmation_required"):
+        effective_question_text = _compose_question_with_revision(request.text, revision_request)
+    else:
+        effective_question_text = request.text
     
     # 构建认证状态信息
     auth_status = AuthStatus(
@@ -644,7 +695,8 @@ async def query(
         current_node="question_intake",
         state_updates={
             "question_text": request.text,
-            "confirmation_mode": "adaptive",
+            "resolved_question_text": effective_question_text,
+            "confirmation_mode": confirmation_mode,
             "pending_actions": [],
             "selected_table_ids": request.get_selected_table_ids(),
             "request_context": {
@@ -662,7 +714,7 @@ async def query(
     # 则恢复原始 tracer 继续追踪，确保完整流程记录在同一个日志文件中
     tracer = get_or_resume_tracer(
         query_id=query_id,
-        question=request.text or "(直接提供IR)",
+        question=effective_question_text or request.text or "(直接提供IR)",
         connection_id=request.connection_id,
         original_query_id=request.original_query_id
     )
@@ -734,7 +786,7 @@ async def query(
         try:
             # 先尝试自动检测（用户只有一个连接的情况）
             actual_connection_id = await _auto_detect_connection(
-                question=request.text,
+                question=effective_question_text,
                 user_id=actual_user_id,
                 user_role=actual_role,
                 domain_id=request.domain_id
@@ -746,11 +798,11 @@ async def query(
                     detected_connection_id=actual_connection_id
                 )
                 # 自动检测成功后，如果未选择表且启用了 LLM 选表，进行单连接 LLM 选表
-                if settings.llm_table_selection_enabled and request.text and not effective_selected_table_id:
+                if settings.llm_table_selection_enabled and effective_question_text and not effective_selected_table_id:
                     logger.info("单连接 LLM 表选择（自动检测连接后）", query_id=query_id, connection_id=actual_connection_id)
                     
                     table_selection_result = await llm_select_table(
-                        question=request.text,
+                        question=effective_question_text,
                         user_id=actual_user_id,
                         user_role=actual_role,
                         connection_id=actual_connection_id,  # 单连接模式
@@ -824,12 +876,12 @@ async def query(
                             state_updates={"selected_table_ids": selected_table_ids},
                             last_error=error_info.get("message"),
                         )
-            elif settings.llm_table_selection_enabled and request.text:
+            elif settings.llm_table_selection_enabled and effective_question_text:
                 # 跨连接 LLM 表选择（仅当用户未选择表时）
                 logger.info("尝试通过 LLM 表选择确定数据库连接", query_id=query_id)
                 
                 table_selection_result = await llm_select_table(
-                    question=request.text,
+                    question=effective_question_text,
                     user_id=actual_user_id,
                     user_role=actual_role,
                     connection_id=None,  # 跨连接模式
@@ -928,11 +980,11 @@ async def query(
             )
     
     # 情况2：已指定 connection_id，但未选择表，需要单连接 LLM 表选择
-    elif settings.llm_table_selection_enabled and request.text and not effective_selected_table_id:
+    elif settings.llm_table_selection_enabled and effective_question_text and not effective_selected_table_id:
         logger.info("单连接 LLM 表选择", query_id=query_id, connection_id=actual_connection_id)
         
         table_selection_result = await llm_select_table(
-            question=request.text,
+            question=effective_question_text,
             user_id=actual_user_id,
             user_role=actual_role,
             connection_id=actual_connection_id,  # 单连接模式
@@ -1158,7 +1210,7 @@ async def query(
             if not settings.few_shot_enabled:
                 info["reason"] = "feature_disabled"
                 return info
-            if not request.text or not sql_text:
+            if not effective_question_text or not sql_text:
                 info["reason"] = "missing_question_or_sql"
                 return info
             if not parser or not getattr(parser, "last_retrieval_summary", None):
@@ -1171,7 +1223,7 @@ async def query(
             async def _writer_task():
                 await _few_shot_writer.record_successful_query(
                     connection_id=actual_connection_id,
-                    question=request.text,
+                    question=effective_question_text,
                     sql_text=sql_text,
                     retrieval_summary=parser.last_retrieval_summary,
                     domain_id=getattr(ir_obj, "domain_id", None),
@@ -1202,7 +1254,7 @@ async def query(
             step.set_output({"confidence": confidence})
             tracer.end_step()
             await _stream_progress(stream, step_name, "success", step_desc, {"confidence": confidence})
-        elif request.text:
+        elif effective_question_text:
             # ========== 第二条链路：向量检索 + LLM3选表+IR生成（当 LLM 表选择关闭时）==========
             # 当 LLM_TABLE_SELECTION_ENABLED=false 时，使用向量检索召回TOP-K表，
             # 然后由LLM3同时完成选表和IR生成，根据置信度决定分流
@@ -1212,9 +1264,9 @@ async def query(
                 step_name = "向量表选择"
                 step_desc = "向量检索并智能选表"
                 table_step = tracer.start_step(step_name, "vector_table_selection", step_desc)
-                await _stream_progress(stream, step_name, "started", step_desc, {"question": request.text})
+                await _stream_progress(stream, step_name, "started", step_desc, {"question": effective_question_text})
                 # 思考过程：开始检索
-                await _stream_thinking(stream, "table_selection", f"正在分析问题：「{request.text[:50]}{'...' if len(request.text) > 50 else ''}」\n正在检索相关数据表...", done=False, step_status="started")
+                await _stream_thinking(stream, "table_selection", f"正在分析问题：「{effective_question_text[:50]}{'...' if len(effective_question_text) > 50 else ''}」\n正在检索相关数据表...", done=False, step_status="started")
                 
                 try:
                     # 1. 加载全局语义模型和检索器（跨连接模式）
@@ -1270,7 +1322,7 @@ async def query(
                     
                     if global_retriever:
                         retrieval_result = await global_retriever.retrieve(
-                            question=request.text,
+                            question=effective_question_text,
                             user_domain_id=request.domain_id,
                             top_k_tables=top_k,
                             global_rules=None,
@@ -1318,7 +1370,7 @@ async def query(
                         
                         if candidate_fields:
                             enum_matches = await enum_retriever.match_enum_values(
-                                user_input=request.text,
+                                user_input=effective_question_text,
                                 candidate_fields=candidate_fields,
                                 top_k=5,
                                 keyword_profile=getattr(retrieval_result, "keyword_profile", None),
@@ -1343,7 +1395,7 @@ async def query(
                             retrieval_result = await global_retriever.apply_enum_boost_and_rerank(
                                 result=retrieval_result,
                                 enum_matches=enum_matches or [],
-                                question=request.text,
+                                question=effective_question_text,
                                 global_rules=None,
                             )
                             logger.info(
@@ -1363,7 +1415,7 @@ async def query(
                     if global_retriever and hasattr(global_retriever, 'apply_llm_top_k_truncation'):
                         retrieval_result = global_retriever.apply_llm_top_k_truncation(
                             result=retrieval_result,
-                            question=request.text,
+                            question=effective_question_text,
                             global_rules=None,
                             enum_matches=enum_matches,
                         )
@@ -1570,7 +1622,7 @@ async def query(
                                 )
                             
                             selection_result = await vector_selector.select_and_generate_ir(
-                                question=request.text,
+                                question=effective_question_text,
                                 tables_with_fields=tables_for_llm,
                                 retrieval_hints=retrieval_hints,
                                 global_rules=global_rules,
@@ -1687,7 +1739,7 @@ async def query(
                                     "duplicate_by": selection_result.ir.get("duplicate_by", []),
                                     "cross_partition_query": selection_result.ir.get("cross_partition_query", False),
                                     "ambiguities": selection_result.ir.get("ambiguities", []),
-                                    "original_question": request.text,
+                                    "original_question": effective_question_text,
                                 }
                                 
                                 # 只有非None时才添加这些可选字段，避免覆盖模型默认值
@@ -1720,7 +1772,7 @@ async def query(
                                 effective_selected_table_id = selection_result.selected_table_id
                                 candidate_snapshot = _build_vector_fallback_selection_card(
                                     tables_with_fields=tables_with_fields,
-                                    question=request.text,
+                                    question=effective_question_text,
                                     fallback_reason="ir_vote_failed",
                                 ).model_dump()
                                 
@@ -1757,7 +1809,7 @@ async def query(
                                         "duplicate_by": selection_result.ir.get("duplicate_by", []),
                                         "cross_partition_query": selection_result.ir.get("cross_partition_query", False),
                                         "ambiguities": selection_result.ir.get("ambiguities", []),
-                                        "original_question": request.text,
+                                        "original_question": effective_question_text,
                                     }
                                     
                                     # 只有非None时才添加这些可选字段，避免覆盖模型默认值
@@ -1789,7 +1841,7 @@ async def query(
                                     effective_selected_table_id = selection_result.selected_table_id
                                     candidate_snapshot = _build_vector_fallback_selection_card(
                                         tables_with_fields=tables_with_fields,
-                                        question=request.text,
+                                        question=effective_question_text,
                                         fallback_reason="low_confidence",
                                     ).model_dump()
                                     
@@ -1824,7 +1876,7 @@ async def query(
                                 # 复用 LLM选表链路的格式，用户确认后走 LLM选表链路的后续流程
                                 fallback_card = _build_vector_fallback_selection_card(
                                     tables_with_fields=tables_with_fields,
-                                    question=request.text,
+                                    question=effective_question_text,
                                     fallback_reason="ir_vote_failed"
                                 )
                                 
@@ -1871,7 +1923,7 @@ async def query(
                                 # 使用向量检索结果构建完整的 TableSelectionCard
                                 fallback_card = _build_vector_fallback_selection_card(
                                     tables_with_fields=tables_with_fields,
-                                    question=request.text,
+                                    question=effective_question_text,
                                     fallback_reason="low_confidence"
                                 )
                                 
@@ -1955,11 +2007,12 @@ async def query(
                 step_name = "NL2IR解析"
                 step_desc = "将自然语言转换为中间表示"
                 step = tracer.start_step(step_name, "parsing", step_desc)
-                await _stream_progress(stream, step_name, "started", step_desc, {"question": request.text})
+                await _stream_progress(stream, step_name, "started", step_desc, {"question": effective_question_text})
                 # 思考过程：开始解析
                 await _stream_thinking(stream, "nl2ir", f"正在解析查询意图...", done=False, step_status="started")
                 step.set_input({
                     "question": request.text,
+                    "resolved_question": effective_question_text,
                     "domain_id": request.domain_id,
                     "selected_table_id": effective_selected_table_id
                 })
@@ -1980,7 +2033,7 @@ async def query(
                 # NL → IR（传入用户指定的业务域和已选择的表ID）
                 # 如果 LLM 表选择已在第1步完成，hierarchical_retriever 会直接使用 selected_table_id
                 ir, confidence = await parser.parse(
-                    request.text,
+                    effective_question_text,
                     user_specified_domain=request.domain_id,
                     pre_retrieved_result=None,  # 不再传递 pre_retrieved_result
                     selected_table_id=effective_selected_table_id,  # 兼容单表模式
@@ -2219,6 +2272,63 @@ async def query(
             stream
         )
 
+        should_pause_for_draft_confirmation = (
+            not request.ir
+            and (
+                confirmation_mode == "always_confirm"
+                or bool(existing_state.get("draft_confirmation_required"))
+            )
+            and not bool(existing_state.get("draft_confirmation_approved"))
+        )
+        if should_pause_for_draft_confirmation:
+            selected_table_names: List[str] = []
+            if selected_table_ids:
+                try:
+                    selected_table_names = await _load_table_display_names(selected_table_ids)
+                except Exception as exc:
+                    logger.warning("加载确认阶段表名失败", query_id=query_id, error=str(exc))
+
+            draft_warnings: List[str] = []
+            if len(selected_table_ids) > 1:
+                draft_warnings.append(f"本次草稿基于 {len(selected_table_ids)} 张表的联合查询。")
+            if existing_state.get("revision_request"):
+                draft_warnings.append("已按您刚才的修改意见重算当前草稿。")
+
+            confirm_card = ConfirmationCard(
+                ir=ir,
+                natural_language=_build_draft_confirmation_summary(
+                    current_ir_display,
+                    selected_table_names=selected_table_names,
+                    revision_request=existing_state.get("revision_request"),
+                ),
+                warnings=draft_warnings,
+            )
+
+            tracer.finalize({"status": "draft_confirmation_needed"}, save_to_file=False)
+            response = QueryResponse(
+                status="confirm_needed",
+                confirmation=confirm_card,
+                auth_status=auth_status,
+                query_id=query_id,
+                timestamp=timestamp,
+            )
+            await _stream_confirmation(stream, confirm_card)
+            return await _return_query_response(
+                response,
+                status="awaiting_user_action",
+                current_node="draft_confirmation",
+                state_updates={
+                    "pending_actions": ["confirm", "revise", "change_table", "request_explanation", "exit_current"],
+                    "draft_confirmation_card": sanitize_for_json(confirm_card.model_dump()),
+                    "ir_snapshot": sanitize_for_json(ir.model_dump()),
+                    "ir_ready": True,
+                    "selected_table_ids": selected_table_ids,
+                    "selected_table_id": effective_selected_table_id,
+                    "draft_confirmation_required": False,
+                    "draft_confirmation_approved": False,
+                },
+            )
+
         # 2.6 权限过滤注入（如果用户已认证且启用RLS）
         permission_info = {"applied": False}
         if current_user and settings.rls_enabled:
@@ -2320,7 +2430,7 @@ async def query(
                 enable_complex_split=settings.enable_complex_query_auto_execution,
                 enable_direct_sql=settings.direct_sql_enabled
             )
-            routing_decision = hybrid_router.route(request.text or "", ir)
+            routing_decision = hybrid_router.route(effective_question_text or "", ir)
             
             # 记录路由决策到 tracer
             route_step = tracer.start_step("混合路由", "routing", "基于LLM标记进行路由决策")
@@ -2382,7 +2492,7 @@ async def query(
                     row_level_filters = permission_info.get("injected_filter_details", [])
                 
                 direct_result = await hybrid_service.process_with_direct_sql(
-                    question=request.text,
+                    question=effective_question_text,
                     semantic_model=semantic_model,
                     user_context=user_context,
                     row_level_filters=row_level_filters
@@ -2451,7 +2561,7 @@ async def query(
                 # 1. CoT Planning
                 from server.cot_planner.planner import get_cot_planner
                 planner = get_cot_planner()
-                plan_steps = await planner.generate_plan(request.text, {"domain_name": ir.domain_name})
+                plan_steps = await planner.generate_plan(effective_question_text, {"domain_name": ir.domain_name})
                 step_cot.add_metadata("cot_plan", plan_steps)
                 
                 # 2. DAG Building（带用户权限过滤）
@@ -2753,7 +2863,7 @@ async def query(
                         status="awaiting_user_action",
                         current_node="execution_guard",
                         state_updates={
-                            "pending_actions": ["execution_decision", "request_explanation", "exit_current"],
+                            "pending_actions": ["execution_decision", "revise", "change_table", "request_explanation", "exit_current"],
                             "execution_guard": sanitize_for_json(confirm_card.model_dump()),
                             "ir_snapshot": sanitize_for_json(ir.model_dump()),
                             "ir_ready": True,
@@ -3775,7 +3885,7 @@ async def query(
                 query_id=query_id,
                 connection_id=actual_connection_id,
                 user_id=actual_user_id,  # 使用实际的用户ID（可能来自Token）
-                original_question=request.text or "(直接提供IR)",
+                original_question=effective_question_text or request.text or "(直接提供IR)",
                 generated_sql=sql if 'sql' in locals() else None,
                 execution_status="success",
                 execution_time_ms=total_time_ms,
@@ -3877,7 +3987,7 @@ async def query(
                 query_id=query_id,
                 connection_id=save_connection_id,
                 user_id=actual_user_id,  # 使用实际的用户ID（可能来自Token）
-                original_question=request.text or "(直接提供IR)",
+                original_question=effective_question_text or request.text or "(直接提供IR)",
                 generated_sql=getattr(e, 'sql', None) or sql if 'sql' in locals() else None,
                 execution_status="failed",
                 execution_time_ms=None,

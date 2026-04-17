@@ -126,6 +126,83 @@ async def test_confirm_action_advances_table_resolution_to_draft_generation():
     assert result["session"]["status"] == "running"
     assert result["session"]["current_node"] == "draft_generation"
     assert result["session"]["state_json"]["selected_table_ids"] == ["table_land_deal"]
+    assert result["session"]["state_json"]["draft_confirmation_required"] is True
+    assert result["session"]["state_json"]["draft_confirmation_approved"] is False
+
+
+@pytest.mark.asyncio
+async def test_revise_action_advances_to_draft_generation_and_keeps_revision_request():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="awaiting_user_action",
+        current_node="execution_guard",
+        state_json={
+            "draft_version": 2,
+            "pending_actions": ["execution_decision", "revise", "change_table", "request_explanation", "exit_current"],
+            "selected_table_ids": ["table_land_deal"],
+            "ir_snapshot": {"query_type": "aggregation"},
+        },
+    )
+
+    service = DraftActionService(db)
+    result = await service.apply_action(
+        query_id=query_id,
+        action_type="revise",
+        payload={"text": "改成查询武汉市"},
+        natural_language_reply=None,
+        draft_version=2,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="revise-1",
+    )
+
+    assert result["action"]["action_type"] == "revise"
+    assert result["session"]["status"] == "running"
+    assert result["session"]["current_node"] == "draft_generation"
+    assert result["session"]["state_json"]["revision_request"]["text"] == "改成查询武汉市"
+    assert result["session"]["state_json"]["draft_confirmation_required"] is True
+    assert result["session"]["state_json"]["draft_confirmation_approved"] is False
+    assert result["session"]["state_json"]["ir_snapshot"] is None
+
+
+@pytest.mark.asyncio
+async def test_confirm_from_draft_confirmation_marks_draft_as_approved():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="awaiting_user_action",
+        current_node="draft_confirmation",
+        state_json={
+            "draft_version": 3,
+            "pending_actions": ["confirm", "revise", "change_table", "request_explanation", "exit_current"],
+            "selected_table_ids": ["table_land_deal"],
+            "ir_snapshot": {"query_type": "aggregation"},
+        },
+    )
+
+    service = DraftActionService(db)
+    result = await service.apply_action(
+        query_id=query_id,
+        action_type="confirm",
+        payload={},
+        natural_language_reply=None,
+        draft_version=3,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="draft-confirm-1",
+    )
+
+    assert result["action"]["action_type"] == "confirm"
+    assert result["session"]["current_node"] == "draft_generation"
+    assert result["session"]["state_json"]["draft_confirmation_approved"] is True
+    assert result["session"]["state_json"]["selected_table_ids"] == ["table_land_deal"]
 
 
 @pytest.mark.asyncio
@@ -245,10 +322,10 @@ async def test_action_validation_rejects_disallowed_transition():
     )
 
     service = DraftActionService(db)
-    with pytest.raises(ValueError, match="不允许动作 change_table"):
+    with pytest.raises(ValueError, match="不允许动作 choose_option"):
         await service.apply_action(
             query_id=query_id,
-            action_type="change_table",
+            action_type="choose_option",
             payload={},
             natural_language_reply=None,
             draft_version=1,

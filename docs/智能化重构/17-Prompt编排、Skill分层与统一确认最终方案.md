@@ -27,27 +27,33 @@
 - `Chat.vue` 已接入统一确认容器
   - 确认阶段按钮动作走 `draft_actions`
   - 确认阶段输入框自由回复也走 `draft_actions`
+  - `table_resolution` / `draft_confirmation` / `execution_guard` 三段按钮都已补齐
   - 结果态已提供“不是这张表，重新选表”按钮
+- `draft_confirmation` 已接通自动重写闭环
+  - 用户 `revise` 后会在同一 `query_id` 下自动重算草稿
+  - 系统会重新停在 `draft_confirmation` 等待用户再次确认
 - 高置信度自动选表成功后，后端会保留 `candidate_snapshot`
   - 用户可在后续把当前表推翻并回退到 `table_resolution`
+- `CONFIRMATION_MODE` 已落地
+  - 当前仓库默认值为 `always_confirm`
 
 但以下内容仍然只是目标态，不应误读为已完成：
 
 - 显式 `query_drafts`
 - `learning_events` / `runtime_memories` / `governance_candidates`
 - LangGraph / 独立 Skills Runtime
-- 真正完整的 `draft_confirmation` 自动重写闭环
 
 ## 3. 当前代码事实确认
 
-### 3.1 当前稳定在线的两类确认
+### 3.1 当前稳定在线的三类确认
 
-当前在线链路中真正稳定工作的确认主要只有两类：
+当前在线链路中真正稳定工作的确认已有三类：
 
 - 表选择确认
+- 草稿确认
 - 高成本执行确认
 
-当前并没有完整落地的“统一语义级 Query Draft 确认”。
+其中 `draft_confirmation` 已能承接“用户修改意见 -> 自动重算草稿 -> 再确认”的完整闭环。
 
 ### 3.2 当前前后端确认协议已进入“后端统一、前端兼容过渡”阶段
 

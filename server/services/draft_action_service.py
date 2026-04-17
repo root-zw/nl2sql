@@ -25,6 +25,7 @@ logger = structlog.get_logger()
 ALLOWED_ACTIONS = {
     "table_resolution": {
         "confirm",
+        "revise",
         "change_table",
         "choose_option",
         "request_explanation",
@@ -40,6 +41,8 @@ ALLOWED_ACTIONS = {
     },
     "execution_guard": {
         "execution_decision",
+        "revise",
+        "change_table",
         "request_explanation",
         "exit_current",
     },
@@ -159,9 +162,23 @@ class DraftActionService:
     ) -> Tuple[str, str, Dict[str, Any]]:
         state = dict(session.get("state_json") or {})
         draft_version = int(state.get("draft_version") or 1)
+        current_node = session.get("current_node")
 
         if action_type == "confirm":
             selected_table_ids = payload.get("selected_table_ids") or state.get("selected_table_ids") or state.get("recommended_table_ids") or []
+            if current_node == "draft_confirmation":
+                return (
+                    "running",
+                    "draft_generation",
+                    {
+                        "pending_actions": [],
+                        "selected_table_ids": selected_table_ids,
+                        "selected_table_id": selected_table_ids[0] if selected_table_ids else state.get("selected_table_id"),
+                        "draft_confirmation_approved": True,
+                        "interruption_requested": False,
+                        "last_action": "confirm",
+                    },
+                )
             return (
                 "running",
                 "draft_generation",
@@ -171,6 +188,9 @@ class DraftActionService:
                     "selected_table_id": selected_table_ids[0] if selected_table_ids else state.get("selected_table_id"),
                     "draft_version": draft_version + 1,
                     "invalidated_artifacts": [],
+                    "draft_confirmation_required": True,
+                    "draft_confirmation_approved": False,
+                    "draft_confirmation_card": None,
                     "manual_table_override": False,
                     "interruption_requested": False,
                     "last_action": "confirm",
@@ -197,6 +217,9 @@ class DraftActionService:
                     "sql_preview": None,
                     "result_meta": None,
                     "execution_guard": None,
+                    "draft_confirmation_card": None,
+                    "draft_confirmation_required": False,
+                    "draft_confirmation_approved": False,
                     "interruption_requested": session.get("status") == "running",
                     "interrupt_target_message_id": session.get("message_id"),
                     "interrupt_reason": "change_table",
@@ -205,11 +228,19 @@ class DraftActionService:
             )
 
         if action_type == "revise":
+            selected_table_ids = (
+                payload.get("selected_table_ids")
+                or state.get("selected_table_ids")
+                or state.get("recommended_table_ids")
+                or []
+            )
             return (
-                "awaiting_user_action",
-                "draft_confirmation",
+                "running",
+                "draft_generation",
                 {
-                    "pending_actions": ["confirm", "change_table", "exit_current"],
+                    "pending_actions": [],
+                    "selected_table_ids": selected_table_ids,
+                    "selected_table_id": selected_table_ids[0] if selected_table_ids else state.get("selected_table_id"),
                     "revision_request": sanitize_for_json(payload),
                     "invalidated_artifacts": ["draft", "ir", "sql", "result"],
                     "ir_ready": False,
@@ -217,7 +248,13 @@ class DraftActionService:
                     "sql_preview": None,
                     "result_meta": None,
                     "execution_guard": None,
+                    "draft_confirmation_card": None,
+                    "draft_confirmation_required": True,
+                    "draft_confirmation_approved": False,
                     "draft_version": draft_version + 1,
+                    "interruption_requested": session.get("status") == "running",
+                    "interrupt_target_message_id": session.get("message_id"),
+                    "interrupt_reason": "revise",
                     "last_action": "revise",
                 },
             )
@@ -243,6 +280,7 @@ class DraftActionService:
                         "last_action": "execution_decision",
                         "execution_decision": "approve",
                         "execution_guard": None,
+                        "draft_confirmation_required": False,
                         "interruption_requested": False,
                     },
                 )

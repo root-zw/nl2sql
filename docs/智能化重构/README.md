@@ -57,7 +57,13 @@
 - `Chat.vue`
   - 已切到基于 `query_sessions` 的统一确认主路径
   - 已支持确认阶段自由回复
+  - 已补齐 `table_resolution` / `draft_confirmation` / `execution_guard` 三个确认节点的按钮动作
   - 已支持结果态“不是这张表，重新选表”
+- `draft_confirmation`
+  - 已能在用户给出修改意见后自动重算草稿，并再次停在统一确认容器里等待确认
+- 确认模式
+  - 已新增 `CONFIRMATION_MODE`
+  - 当前仓库默认值已切到 `always_confirm`
 - 自动选表纠错
   - 高置信度自动选表成功后已保留 `candidate_snapshot`
   - `change_table` 已能打断运行中查询并回退到 `table_resolution`
