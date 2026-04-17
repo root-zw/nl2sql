@@ -115,6 +115,67 @@ async def test_update_session_merges_state_without_losing_existing_fields():
 
 
 @pytest.mark.asyncio
+async def test_update_session_accepts_json_string_state_from_database():
+    db = FakeQuerySessionDB()
+    service = QuerySessionService(db)
+    query_id = uuid4()
+
+    await service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="running",
+        current_node="question_intake",
+        state_json={
+            "question_text": "查一下武汉土地成交均价",
+            "pending_actions": [],
+        },
+    )
+    db.sessions[query_id]["state_json"] = json.dumps(db.sessions[query_id]["state_json"], ensure_ascii=False)
+
+    updated = await service.update_session(
+        query_id,
+        status="awaiting_user_action",
+        current_node="draft_confirmation",
+        state_updates={
+            "pending_actions": ["confirm", "revise"],
+            "draft_confirmation_required": True,
+        },
+    )
+
+    assert updated is not None
+    assert updated["current_node"] == "draft_confirmation"
+    assert updated["state_json"]["question_text"] == "查一下武汉土地成交均价"
+    assert updated["state_json"]["pending_actions"] == ["confirm", "revise"]
+    assert updated["state_json"]["draft_confirmation_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_session_parses_json_string_state():
+    db = FakeQuerySessionDB()
+    service = QuerySessionService(db)
+    query_id = uuid4()
+
+    await service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="awaiting_user_action",
+        current_node="table_resolution",
+        state_json={
+            "pending_actions": ["confirm", "change_table"],
+            "question_text": "查询土地利用现状",
+        },
+    )
+    db.sessions[query_id]["state_json"] = json.dumps(db.sessions[query_id]["state_json"], ensure_ascii=False)
+
+    result = await service.get_session(query_id)
+
+    assert result is not None
+    assert result["current_node"] == "table_resolution"
+    assert result["state_json"]["pending_actions"] == ["confirm", "change_table"]
+    assert result["state_json"]["question_text"] == "查询土地利用现状"
+
+
+@pytest.mark.asyncio
 async def test_get_session_returns_none_for_unknown_query():
     db = FakeQuerySessionDB()
     service = QuerySessionService(db)

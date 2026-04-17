@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Dict, Optional
 from uuid import UUID
@@ -41,13 +42,34 @@ class QuerySessionService:
 
     @staticmethod
     def _dump_state(state: Optional[Dict[str, Any]]) -> str:
-        return json.dumps(sanitize_for_json(state or {}), ensure_ascii=False)
+        return json.dumps(sanitize_for_json(QuerySessionService._normalize_state(state)), ensure_ascii=False)
+
+    @staticmethod
+    def _normalize_state(state: Optional[Any]) -> Dict[str, Any]:
+        if state is None:
+            return {}
+
+        if isinstance(state, str):
+            try:
+                state = json.loads(state)
+            except json.JSONDecodeError:
+                logger.warning("query_session state_json 不是合法 JSON，已按空对象处理")
+                return {}
+
+        if isinstance(state, Mapping):
+            return dict(state)
+
+        logger.warning(
+            "query_session state_json 类型异常，已按空对象处理",
+            state_type=type(state).__name__,
+        )
+        return {}
 
     @staticmethod
     def _merge_state(current_state: Optional[Dict[str, Any]], updates: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        merged = dict(current_state or {})
+        merged = QuerySessionService._normalize_state(current_state)
         if updates:
-            merged.update(sanitize_for_json(updates))
+            merged.update(sanitize_for_json(QuerySessionService._normalize_state(updates)))
         return merged
 
     @staticmethod
@@ -61,7 +83,7 @@ class QuerySessionService:
             "user_id": str(row["user_id"]) if row["user_id"] else None,
             "status": row["status"],
             "current_node": row["current_node"],
-            "state_json": row["state_json"] or {},
+            "state_json": QuerySessionService._normalize_state(row["state_json"]),
             "last_error": row["last_error"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
