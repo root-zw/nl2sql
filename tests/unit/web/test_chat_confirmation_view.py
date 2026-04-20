@@ -13,6 +13,16 @@ def test_chat_view_prefers_confirmation_view_for_pending_session_rendering():
     assert "buildPendingTableSelectionCard(snapshot, options.fallbackTableSelection)" in content
     assert "buildPendingConfirmCard(snapshot, 'execution_guard', options.fallbackConfirmation)" in content
     assert "snapshot.confirmation_view?.context?.question_text" in content
+    assert "const pendingSessionDomainHint = computed(() =>" in content
+    assert "const pendingSessionKnownConstraints = computed(() =>" in content
+    assert "v-if=\"pendingSessionDomainHint || pendingSessionKnownConstraints.length\"" in content
+    assert "const pendingTableResolutionDraftPreview = computed(() =>" in content
+    assert "v-if=\"pendingTableResolutionDraftPreview\"" in content
+    assert "这是基于当前候选表生成的暂定理解，确认选表后系统会继续重算。" in content
+    assert "const hasLegacyPendingConfirmFallback = computed(() =>" in content
+    assert "const hasLegacyPendingTableSelectionFallback = computed(() =>" in content
+    assert "v-if=\"hasLegacyPendingConfirmFallback\"" in content
+    assert "v-if=\"hasLegacyPendingTableSelectionFallback\"" in content
 
 
 def test_chat_view_uses_resume_directive_to_continue_pending_query():

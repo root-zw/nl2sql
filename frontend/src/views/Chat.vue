@@ -362,6 +362,52 @@
                     </div>
                   </div>
 
+                  <div
+                    v-if="pendingSessionDomainHint || pendingSessionKnownConstraints.length"
+                    class="session-context-section"
+                  >
+                    <div v-if="pendingSessionDomainHint" class="session-context-row">
+                      <p class="section-label">📁 领域提示：</p>
+                      <div class="session-context-chip-list">
+                        <span class="session-context-chip">{{ pendingSessionDomainHint }}</span>
+                      </div>
+                    </div>
+                    <div v-if="pendingSessionKnownConstraints.length" class="session-context-row">
+                      <p class="section-label">📌 已知约束：</p>
+                      <div class="session-context-chip-list">
+                        <span
+                          v-for="(constraint, index) in pendingSessionKnownConstraints"
+                          :key="`${constraint}-${index}`"
+                          class="session-context-chip"
+                        >
+                          {{ constraint }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div
+                    v-if="pendingTableResolutionDraftPreview"
+                    class="draft-preview-section"
+                  >
+                    <p class="section-label">🧭 暂定查询草稿：</p>
+                    <div class="draft-preview-box">
+                      <pre class="understanding-text">{{ pendingTableResolutionDraftPreview.natural_language }}</pre>
+                    </div>
+                    <div class="draft-preview-tip">
+                      这是基于当前候选表生成的暂定理解，确认选表后系统会继续重算。
+                    </div>
+                    <div v-if="pendingTableResolutionDraftPreview.warnings.length" class="warnings-section">
+                      <div
+                        v-for="(warning, index) in pendingTableResolutionDraftPreview.warnings"
+                        :key="`draft-preview-warning-${index}`"
+                        class="warning-tag"
+                      >
+                        {{ warning }}
+                      </div>
+                    </div>
+                  </div>
+
                   <template v-if="pendingSessionNode === 'table_resolution'">
                     <div class="table-selection-tip unified-table-tip">
                       <span v-if="showAllAccessibleTables">以下是您可访问的所有数据表，请重新确认要查询的表：</span>
@@ -610,7 +656,7 @@
           </div>
 
           <!-- 旧确认卡回退 -->
-          <div v-if="!hasActivePendingSession && pendingConfirm" class="message-item assistant">
+          <div v-if="hasLegacyPendingConfirmFallback" class="message-item assistant">
             <div class="message-avatar">🤖</div>
             <div class="message-content">
               <div class="confirm-box">
@@ -655,7 +701,7 @@
           </div>
 
           <!-- 旧表选择卡回退 -->
-          <div v-if="!hasActivePendingSession && pendingTableSelection" class="message-item assistant">
+          <div v-if="hasLegacyPendingTableSelectionFallback" class="message-item assistant">
             <div class="message-avatar">🤖</div>
             <div class="message-content">
               <div class="table-selection-box">
@@ -1093,6 +1139,14 @@ const hasActivePendingSession = computed(() => {
     ['table_resolution', 'execution_guard', 'draft_confirmation'].includes(snapshot.current_node)
 })
 
+const hasLegacyPendingConfirmFallback = computed(() => {
+  return !pendingSessionSnapshot.value && Boolean(pendingConfirm.value)
+})
+
+const hasLegacyPendingTableSelectionFallback = computed(() => {
+  return !pendingSessionSnapshot.value && Boolean(pendingTableSelection.value)
+})
+
 const pendingSessionState = computed(() => {
   return pendingSessionSnapshot.value?.state || {}
 })
@@ -1148,6 +1202,33 @@ const pendingSessionSummaryText = computed(() => {
     return pendingConfirm.value?.natural_language || '系统已生成新的查询草稿，请确认是否继续。'
   }
   return ''
+})
+
+const pendingSessionDomainHint = computed(() => {
+  return pendingConfirmationView.value?.context?.safe_summary?.domain_hint || ''
+})
+
+const pendingSessionKnownConstraints = computed(() => {
+  const constraints = pendingConfirmationView.value?.context?.safe_summary?.known_constraints
+  return Array.isArray(constraints) ? constraints.filter(Boolean) : []
+})
+
+const pendingTableResolutionDraftPreview = computed(() => {
+  if (pendingSessionNode.value !== 'table_resolution') return null
+
+  const draft = pendingConfirmationView.value?.draft || null
+  if (!draft) return null
+
+  const naturalLanguage = draft.natural_language || ''
+  const warnings = Array.isArray(draft.warnings) ? draft.warnings.filter(Boolean) : []
+  if (!naturalLanguage && warnings.length === 0 && !draft.draft_json) {
+    return null
+  }
+
+  return {
+    natural_language: naturalLanguage || '系统已生成暂定草稿，确认选表后会继续细化。',
+    warnings
+  }
 })
 
 const pendingRevisionNote = computed(() => {
@@ -4780,6 +4861,55 @@ watch(isLoggedIn, (val) => {
 .user-question-section,
 .ai-understanding-section {
   margin-bottom: 16px;
+}
+
+.session-context-section {
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.session-context-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.session-context-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.session-context-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  background: rgba(99, 102, 241, 0.08);
+  color: var(--text-primary);
+  border: 1px solid rgba(99, 102, 241, 0.18);
+  border-radius: 999px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.draft-preview-section {
+  margin-bottom: 16px;
+}
+
+.draft-preview-box {
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.16);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.draft-preview-tip {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 
 .user-question-text {
