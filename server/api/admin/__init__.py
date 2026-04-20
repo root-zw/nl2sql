@@ -19,6 +19,7 @@ __all__ = [
     'sync',            # 同步
     'tables',          # 数据表配置
     'metadata_io',     # 元数据批量导入导出
+    'governance_candidates', # 治理候选
     'model_providers', # 模型供应商管理
     'prompts',         # 提示词模板管理
 ]

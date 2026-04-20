@@ -672,6 +672,12 @@ class DraftActionService:
                         "next_node": next_node,
                         "previous_status": session.get("status"),
                         "next_status": next_status,
+                        "previous_selected_table_ids": list(session.get("state_json", {}).get("selected_table_ids") or []),
+                        "previous_recommended_table_ids": list(session.get("state_json", {}).get("recommended_table_ids") or []),
+                        "previous_rejected_table_ids": list(session.get("state_json", {}).get("rejected_table_ids") or []),
+                        "next_selected_table_ids": list((updated_session or {}).get("state_json", {}).get("selected_table_ids") or []),
+                        "next_rejected_table_ids": list((updated_session or {}).get("state_json", {}).get("rejected_table_ids") or []),
+                        "manual_table_override": bool((updated_session or {}).get("state_json", {}).get("manual_table_override")),
                         "payload": payload_json,
                     },
                 )

@@ -404,6 +404,10 @@ async def test_natural_language_change_table_invalidates_ir_artifacts():
     assert result["session"]["state_json"]["sql_preview"] is None
     assert "table_land_deal" in result["session"]["state_json"]["rejected_table_ids"]
     assert result["interruption"]["requested"] is False
+    learning_event = next(iter(db.learning_events.values()))
+    assert learning_event["payload_json"]["action_type"] == "change_table"
+    assert learning_event["payload_json"]["previous_selected_table_ids"] == ["table_land_deal"]
+    assert learning_event["payload_json"]["next_rejected_table_ids"] == ["table_land_deal"]
 
 
 @pytest.mark.asyncio

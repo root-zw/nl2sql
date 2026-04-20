@@ -1403,6 +1403,33 @@ CREATE INDEX IF NOT EXISTS idx_learning_events_type_created
 
 COMMENT ON TABLE learning_events IS '统一学习事件事实表';
 
+CREATE TABLE IF NOT EXISTS governance_candidates (
+    candidate_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    candidate_type VARCHAR(64) NOT NULL,
+    target_object_type VARCHAR(64) NOT NULL,
+    target_object_id VARCHAR(128) NOT NULL,
+    scope_type VARCHAR(64) NOT NULL,
+    scope_id UUID,
+    suggested_change_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    evidence_summary TEXT,
+    evidence_payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    support_count INT NOT NULL DEFAULT 1,
+    confidence_score NUMERIC(5,4),
+    status VARCHAR(32) NOT NULL DEFAULT 'observed',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    reviewed_at TIMESTAMP WITH TIME ZONE,
+    reviewed_by UUID REFERENCES users(user_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_governance_candidates_status_created
+    ON governance_candidates(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_governance_candidates_target
+    ON governance_candidates(target_object_type, target_object_id);
+CREATE INDEX IF NOT EXISTS idx_governance_candidates_scope
+    ON governance_candidates(scope_type, scope_id);
+
+COMMENT ON TABLE governance_candidates IS '运行收益治理候选表';
+
 -- ============================================================================
 -- 初始化数据
 -- ============================================================================
