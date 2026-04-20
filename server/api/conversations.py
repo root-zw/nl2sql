@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from server.middleware.auth import get_current_active_user
 from server.models.admin import User as AdminUser
 from server.services.conversation_service import ConversationService, ActiveQueryRegistry
+from server.services.followup_context_service import FollowupContextService
 from server.utils.db_pool import get_metadata_pool
 
 logger = structlog.get_logger()
@@ -81,6 +82,19 @@ class ConversationDetailResponse(BaseModel):
     """会话详情响应（包含消息）"""
     conversation: ConversationResponse
     messages: List[MessageResponse]
+
+
+class FollowupContextResolutionRequest(BaseModel):
+    """结果后追问上下文解析请求"""
+    text: str = Field(..., min_length=1, description="用户输入")
+    context_depth: Optional[int] = Field(None, ge=0, le=20, description="上下文深度（覆盖默认值）")
+
+
+class FollowupContextResolutionResponse(BaseModel):
+    """结果后追问上下文解析响应"""
+    resolution: str
+    analysis_context: Optional[Dict[str, Any]] = None
+    message: Optional[str] = None
 
 
 # ==================== 依赖注入 ====================
@@ -354,3 +368,30 @@ async def get_conversation_context(
         "messages": context
     }
 
+
+@router.post("/{conversation_id}/followup-context-resolution", response_model=FollowupContextResolutionResponse)
+async def resolve_followup_context(
+    conversation_id: str,
+    request: FollowupContextResolutionRequest,
+    current_user: AdminUser = Depends(get_current_active_user),
+    db=Depends(get_db_connection)
+):
+    """显式解析结果后追问上下文"""
+    service = ConversationService(db)
+
+    conversation = await service.get_conversation(
+        conversation_id=UUID(conversation_id),
+        user_id=UUID(str(current_user.user_id))
+    )
+    if not conversation:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    context_messages = await service.get_recent_context(
+        conversation_id=UUID(conversation_id),
+        depth=request.context_depth
+    )
+    resolution = FollowupContextService.resolve_followup_context(
+        request.text,
+        context_messages,
+    )
+    return FollowupContextResolutionResponse(**resolution)

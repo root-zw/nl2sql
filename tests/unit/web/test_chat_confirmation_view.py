@@ -31,3 +31,14 @@ def test_chat_view_starts_fresh_query_when_pending_reply_becomes_new_query():
     assert "async function startFreshQueryFromPendingReply" in content
     assert "if (result?.resolution === 'resolved_to_new_query')" in content
     assert "await startFreshQueryFromPendingReply(nextQueryText)" in content
+
+
+def test_chat_view_resolves_followup_context_before_query_execution():
+    chat_view = ROOT_DIR / "frontend" / "src" / "views" / "Chat.vue"
+    content = chat_view.read_text(encoding="utf-8")
+
+    assert "async function resolveFollowupContextResolution" in content
+    assert "conversationAPI.resolveFollowupContext" in content
+    assert "if (followupResolutionResult?.resolution === 'need_clarification')" in content
+    assert "analysis_context: options.analysisContext || null" in content
+    assert "followup_resolution: options.followupResolution || null" in content

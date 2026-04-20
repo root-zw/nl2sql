@@ -147,6 +147,40 @@ def _try_uuid(value: Optional[str]) -> Optional[UUID]:
         return None
 
 
+def _extract_analysis_table_ids(analysis_context: Optional[Dict[str, Any]]) -> List[str]:
+    if not analysis_context:
+        return []
+    base_refs = analysis_context.get("base_result_refs") or []
+    if not base_refs:
+        return []
+    table_ids = base_refs[0].get("table_ids") or []
+    return [str(table_id) for table_id in table_ids if table_id]
+
+
+def _compose_question_with_analysis_context(
+    question_text: Optional[str],
+    analysis_context: Optional[Dict[str, Any]],
+    followup_resolution: Optional[str],
+) -> Optional[str]:
+    if not question_text or not analysis_context:
+        return question_text
+
+    context_mode = analysis_context.get("context_mode") or "followup"
+    scope_summary = analysis_context.get("scope_summary")
+    if not scope_summary:
+        base_refs = analysis_context.get("base_result_refs") or []
+        if base_refs:
+            scope_summary = base_refs[0].get("result_summary")
+
+    resolution_label = "基于上一结果继续分析"
+    if followup_resolution == "compare_with_result" or context_mode == "compare":
+        resolution_label = "基于上一结果做对比"
+
+    if scope_summary:
+        return f"{question_text}\n\n[结果上下文] {resolution_label}。上一结果摘要：{scope_summary}"
+    return f"{question_text}\n\n[结果上下文] {resolution_label}。"
+
+
 async def _load_table_display_names(table_ids: List[str]) -> List[str]:
     valid_ids: List[UUID] = []
     for table_id in table_ids:
@@ -589,12 +623,19 @@ async def query(
         settings.confirmation_mode,
     )
     revision_request = existing_state.get("revision_request")
+    analysis_context = sanitize_for_json(request.analysis_context) if request.analysis_context else None
+    followup_resolution = request.followup_resolution
     if request.ir and existing_state.get("resolved_question_text"):
         effective_question_text = existing_state.get("resolved_question_text")
     elif request.text and existing_state.get("draft_confirmation_required"):
         effective_question_text = _compose_question_with_revision(request.text, revision_request)
     else:
         effective_question_text = request.text
+    effective_question_text = _compose_question_with_analysis_context(
+        effective_question_text,
+        analysis_context,
+        followup_resolution,
+    )
     
     # 构建认证状态信息
     auth_status = AuthStatus(
@@ -618,6 +659,9 @@ async def query(
     session_user_id = _try_uuid(actual_user_id)
     session_conversation_id = _try_uuid(request.conversation_id)
     session_message_id = _try_uuid(_message_id_ctx.get() or request.message_id)
+    initial_selected_table_ids = request.get_selected_table_ids()
+    if not initial_selected_table_ids:
+        initial_selected_table_ids = _extract_analysis_table_ids(analysis_context)
 
     async def _write_query_session(
         *,
@@ -703,7 +747,9 @@ async def query(
             "resolved_question_text": effective_question_text,
             "confirmation_mode": confirmation_mode,
             "pending_actions": [],
-            "selected_table_ids": request.get_selected_table_ids(),
+            "selected_table_ids": initial_selected_table_ids,
+            "analysis_context": analysis_context,
+            "followup_resolution": followup_resolution,
             "request_context": {
                 "connection_id": request.connection_id,
                 "domain_id": request.domain_id,
@@ -711,6 +757,7 @@ async def query(
                 "force_execute": request.force_execute,
                 "explain_only": request.explain_only,
                 "confirmation_mode": confirmation_mode,
+                "followup_resolution": followup_resolution,
             },
         },
     )
@@ -739,7 +786,7 @@ async def query(
     # 这一步会确定 connection_id 和 selected_table_id
     actual_connection_id = request.connection_id
     # 支持多表选择：优先使用 selected_table_ids，向后兼容 selected_table_id
-    selected_table_ids = request.get_selected_table_ids()
+    selected_table_ids = request.get_selected_table_ids() or initial_selected_table_ids
     effective_selected_table_id = selected_table_ids[0] if selected_table_ids else None
     candidate_snapshot = None
 
@@ -2687,6 +2734,11 @@ async def query(
                     cached_result = await cache.get(cache_key)
 
                     if cached_result:
+                        cached_result.meta = {
+                            **(cached_result.meta or {}),
+                            "selected_table_ids": selected_table_ids,
+                            "selected_table_id": effective_selected_table_id,
+                        }
                         cache_hit = True
                         step.set_output({"hit": True, "rows": len(cached_result.rows)})
                         tracer.end_step()
@@ -2797,7 +2849,12 @@ async def query(
                 explain_result = QueryResult(
                     columns=[{"name": "sql", "type": "string"}],
                     rows=[[sql]],
-                    meta={"sql": sql, "explain_only": True}
+                    meta={
+                        "sql": sql,
+                        "explain_only": True,
+                        "selected_table_ids": selected_table_ids,
+                        "selected_table_id": effective_selected_table_id,
+                    }
                 )
                 response = QueryResponse(
                     status="success",
@@ -3917,6 +3974,13 @@ async def query(
                 if not result.meta:
                     result.meta = {}
                 result.meta["few_shot_learning"] = few_shot_learning_info
+
+        if result:
+            result.meta = {
+                **(result.meta or {}),
+                "selected_table_ids": selected_table_ids,
+                "selected_table_id": effective_selected_table_id,
+            }
 
         # 完成追踪
         tracer.finalize({

@@ -322,6 +322,10 @@ export const conversationAPI = {
   getContext: (conversationId, depth) =>
     request.get(`/conversations/${conversationId}/context`, { params: { depth } }),
 
+  // 解析结果后追问上下文
+  resolveFollowupContext: (conversationId, data) =>
+    request.post(`/conversations/${conversationId}/followup-context-resolution`, data),
+
   // 停止消息生成
   stopMessage: (messageId) => request.post('/conversations/messages/stop', { message_id: messageId }),
   

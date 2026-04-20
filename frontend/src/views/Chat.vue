@@ -1225,6 +1225,29 @@ async function loadInitialData() {
   ])
 }
 
+function hasResolvableResultContext() {
+  return messages.value.some(msg =>
+    msg.role === 'assistant' &&
+    msg.status === 'completed' &&
+    msg.query_id &&
+    (msg.result_data || msg.result_summary || msg.content)
+  )
+}
+
+async function resolveFollowupContextResolution(text) {
+  if (!currentConversationId.value || !hasResolvableResultContext()) {
+    return { resolution: 'resolved_to_new_query' }
+  }
+
+  try {
+    const res = await conversationAPI.resolveFollowupContext(currentConversationId.value, { text })
+    return res.data || { resolution: 'resolved_to_new_query' }
+  } catch (e) {
+    console.warn('解析结果后追问上下文失败，已回退为独立新问题', e)
+    return { resolution: 'resolved_to_new_query' }
+  }
+}
+
 function buildIdempotencyKey(prefix = 'session-action') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
@@ -1783,12 +1806,24 @@ async function handleSendMessage() {
     return
   }
 
+  const followupResolutionResult = await resolveFollowupContextResolution(text)
+  if (followupResolutionResult?.resolution === 'need_clarification') {
+    appendAssistantInfoMessage(
+      followupResolutionResult.message || '请先说明你是要继续分析上一结果，还是要发起一个新问题。'
+    )
+    return
+  }
+
   const confirmationModeForSend = consumeQueryConfirmationMode()
   clearPendingSessionState()
   const assistantMessageId = createAssistantPlaceholder()
   prepareAssistantPlaceholder(assistantMessageId)
   await executeQueryViaWebSocket(text, assistantMessageId, {
-    confirmationMode: confirmationModeForSend
+    confirmationMode: confirmationModeForSend,
+    analysisContext: followupResolutionResult?.analysis_context || null,
+    followupResolution: ['continue_on_result', 'compare_with_result'].includes(followupResolutionResult?.resolution)
+      ? followupResolutionResult.resolution
+      : null
   })
 }
 
@@ -1823,6 +1858,8 @@ async function executeQueryViaWebSocket(text, assistantMessageId, options = {}) 
       multi_table_mode: options.multiTableMode || null,
       original_query_id: options.originalQueryId || null,
       confirmation_mode: options.confirmationMode || null,
+      analysis_context: options.analysisContext || null,
+      followup_resolution: options.followupResolution || null,
       force_execute: Boolean(options.forceExecute),
       explain_only: explainOnly.value,
       token: token ? `Bearer ${token}` : null

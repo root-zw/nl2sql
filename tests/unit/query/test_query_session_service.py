@@ -255,6 +255,33 @@ async def test_update_session_derives_confirmation_view_for_draft_confirmation()
 
 
 @pytest.mark.asyncio
+async def test_get_session_keeps_analysis_context_in_confirmation_view_dependency_meta():
+    db = FakeQuerySessionDB()
+    service = QuerySessionService(db)
+    query_id = uuid4()
+
+    await service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="running",
+        current_node="question_intake",
+        state_json={
+            "question_text": "那按区域展开看一下呢？",
+            "analysis_context": {
+                "context_mode": "followup",
+                "inherit_from_query_id": "q-last",
+            },
+        },
+    )
+
+    result = await service.get_session(query_id)
+
+    assert result is not None
+    assert result["confirmation_view"]["dependency_meta"]["analysis_context"]["context_mode"] == "followup"
+    assert result["confirmation_view"]["dependency_meta"]["analysis_context"]["inherit_from_query_id"] == "q-last"
+
+
+@pytest.mark.asyncio
 async def test_get_session_returns_none_for_unknown_query():
     db = FakeQuerySessionDB()
     service = QuerySessionService(db)

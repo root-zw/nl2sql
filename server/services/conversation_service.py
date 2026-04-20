@@ -425,7 +425,7 @@ class ConversationService:
         
         # 获取最近的 N 轮对话（每轮包含 user + assistant）
         rows = await self.db.fetch("""
-            SELECT message_id, role, content, sql_text, result_summary, status
+            SELECT message_id, role, content, query_id, sql_text, result_summary, result_data, status
             FROM conversation_messages
             WHERE conversation_id = $1 AND status = 'completed'
             ORDER BY created_at DESC
@@ -669,4 +669,3 @@ class ActiveQueryRegistry:
                    OR cancelled_at < NOW() - INTERVAL '%s seconds')
         """ % (timeout_seconds, timeout_seconds))
         return int(result.split()[-1])
-

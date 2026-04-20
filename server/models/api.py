@@ -43,6 +43,8 @@ class QueryRequest(BaseModel):
     conversation_id: Optional[str] = None  # 会话ID
     message_id: Optional[str] = None  # 消息ID（由前端生成，用于追踪）
     context_depth: Optional[int] = None  # 上下文深度（覆盖默认值）
+    analysis_context: Optional[Dict[str, Any]] = None  # 结果后追问上下文
+    followup_resolution: Optional[Literal["continue_on_result", "compare_with_result"]] = None  # 结果后追问解析结果
     
     def get_selected_table_ids(self) -> List[str]:
         """获取所有选中的表ID（兼容单表和多表模式）"""
