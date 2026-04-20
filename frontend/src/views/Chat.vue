@@ -2194,6 +2194,13 @@ async function continueQueryFromResumeDirective(resumeDirective = {}) {
   })
 }
 
+async function startFreshQueryFromPendingReply(text) {
+  const assistantMessageId = createAssistantPlaceholder()
+  prepareAssistantPlaceholder(assistantMessageId)
+  clearPendingSessionState()
+  await executeQueryViaWebSocket(text, assistantMessageId, {})
+}
+
 async function submitPendingSessionAction({
   actionType = null,
   payload = {},
@@ -2221,6 +2228,14 @@ async function submitPendingSessionAction({
     const result = res.data
     if (result?.resolution === 'need_clarification') {
       appendAssistantInfoMessage(result.message)
+      return result
+    }
+
+    if (result?.resolution === 'resolved_to_new_query') {
+      const nextQueryText = result.new_query_text || naturalLanguageReply
+      if (nextQueryText) {
+        await startFreshQueryFromPendingReply(nextQueryText)
+      }
       return result
     }
 

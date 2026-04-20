@@ -22,3 +22,12 @@ def test_chat_view_uses_resume_directive_to_continue_pending_query():
     assert "async function continueQueryFromResumeDirective" in content
     assert "if (result?.resume_directive?.should_resume)" in content
     assert "await continueQueryFromResumeDirective(result.resume_directive)" in content
+
+
+def test_chat_view_starts_fresh_query_when_pending_reply_becomes_new_query():
+    chat_view = ROOT_DIR / "frontend" / "src" / "views" / "Chat.vue"
+    content = chat_view.read_text(encoding="utf-8")
+
+    assert "async function startFreshQueryFromPendingReply" in content
+    assert "if (result?.resolution === 'resolved_to_new_query')" in content
+    assert "await startFreshQueryFromPendingReply(nextQueryText)" in content

@@ -258,6 +258,76 @@ async def test_execution_approve_returns_resume_directive():
 
 
 @pytest.mark.asyncio
+async def test_natural_language_pending_reply_can_be_resolved_to_new_query():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="awaiting_user_action",
+        current_node="draft_confirmation",
+        state_json={
+            "draft_version": 5,
+            "question_text": "查询土地成交均价",
+            "pending_actions": ["confirm", "revise", "change_table", "request_explanation", "exit_current"],
+        },
+    )
+
+    service = DraftActionService(db)
+    result = await service.apply_action(
+        query_id=query_id,
+        action_type=None,
+        payload={},
+        natural_language_reply="那武汉今年成交总价排名前十的是哪些地块？",
+        draft_version=5,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="new-query-reply-1",
+    )
+
+    assert result["resolution"] == "resolved_to_new_query"
+    assert result["new_query_text"] == "那武汉今年成交总价排名前十的是哪些地块？"
+    assert result["session"]["current_node"] == "draft_confirmation"
+    assert db.actions == []
+
+
+@pytest.mark.asyncio
+async def test_natural_language_pending_reply_can_require_clarification():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="awaiting_user_action",
+        current_node="table_resolution",
+        state_json={
+            "draft_version": 6,
+            "question_text": "查询土地利用现状",
+            "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
+        },
+    )
+
+    service = DraftActionService(db)
+    result = await service.apply_action(
+        query_id=query_id,
+        action_type=None,
+        payload={},
+        natural_language_reply="嗯",
+        draft_version=6,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="clarify-reply-1",
+    )
+
+    assert result["resolution"] == "need_clarification"
+    assert "新问题" in result["message"]
+    assert result["session"]["current_node"] == "table_resolution"
+    assert db.actions == []
+
+
+@pytest.mark.asyncio
 async def test_natural_language_change_table_invalidates_ir_artifacts():
     db = FakeActionDB()
     query_id = uuid4()

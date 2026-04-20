@@ -114,36 +114,130 @@ class DraftActionService:
         }
 
     @staticmethod
-    def resolve_natural_language_reply(current_node: str, text: str) -> Tuple[Optional[str], Dict[str, Any], str]:
+    def _looks_like_new_query(text: str) -> bool:
         normalized = (text or "").strip()
-        lowered = normalized.lower()
         if not normalized:
-            return None, {}, "请告诉我你是想确认当前理解、修改条件，还是重新选表。"
+            return False
+
+        query_prefixes = (
+            "查",
+            "查询",
+            "统计",
+            "看",
+            "分析",
+            "列出",
+            "展示",
+            "告诉我",
+            "我想看",
+            "帮我查",
+            "帮我看",
+            "帮我统计",
+            "请查",
+            "请帮我查",
+            "那",
+            "再看",
+            "另外",
+        )
+        query_markers = (
+            "？",
+            "?",
+            "多少",
+            "哪些",
+            "什么",
+            "怎么",
+            "趋势",
+            "排名",
+            "top",
+            "同比",
+            "环比",
+            "分布",
+            "明细",
+            "情况",
+        )
+        lowered = normalized.lower()
+        return normalized.startswith(query_prefixes) or any(marker in normalized for marker in query_markers) or "top" in lowered
+
+    @staticmethod
+    def resolve_pending_reply(current_node: str, text: str) -> Dict[str, Any]:
+        normalized = (text or "").strip()
+        if not normalized:
+            return {
+                "resolution": "need_clarification",
+                "message": "请告诉我你是想确认当前理解、修改条件，还是重新选表。",
+            }
 
         if any(token in normalized for token in ["不是这张表", "换表", "表不对", "重新选表"]):
-            return "change_table", {"reason": normalized}, ""
+            return {
+                "resolution": "resolved_to_action",
+                "action_type": "change_table",
+                "payload": {"reason": normalized},
+            }
 
         if "手动选表" in normalized:
-            return "change_table", {"mode": "manual_select", "reason": normalized}, ""
+            return {
+                "resolution": "resolved_to_action",
+                "action_type": "change_table",
+                "payload": {"mode": "manual_select", "reason": normalized},
+            }
 
         if any(token in normalized for token in ["确认", "就按这个", "按这个查", "继续吧", "可以"]):
             if current_node == "execution_guard":
-                return "execution_decision", {"decision": "approve", "source_text": normalized}, ""
-            return "confirm", {"source_text": normalized}, ""
+                return {
+                    "resolution": "resolved_to_action",
+                    "action_type": "execution_decision",
+                    "payload": {"decision": "approve", "source_text": normalized},
+                }
+            return {
+                "resolution": "resolved_to_action",
+                "action_type": "confirm",
+                "payload": {"source_text": normalized},
+            }
 
         if any(token in normalized for token in ["取消", "算了", "先不查"]):
-            return "exit_current", {"mode": "cancel", "source_text": normalized}, ""
+            return {
+                "resolution": "resolved_to_action",
+                "action_type": "exit_current",
+                "payload": {"mode": "cancel", "source_text": normalized},
+            }
 
         if any(token in normalized for token in ["为什么", "解释", "为啥"]):
-            return "request_explanation", {"question": normalized}, ""
+            return {
+                "resolution": "resolved_to_action",
+                "action_type": "request_explanation",
+                "payload": {"question": normalized},
+            }
 
         if any(token in normalized for token in ["改", "换成", "不要", "不是"]):
-            return "revise", {"text": normalized}, ""
+            return {
+                "resolution": "resolved_to_action",
+                "action_type": "revise",
+                "payload": {"text": normalized},
+            }
+
+        if DraftActionService._looks_like_new_query(normalized):
+            return {
+                "resolution": "resolved_to_new_query",
+                "new_query_text": normalized,
+            }
 
         if current_node in {"table_resolution", "draft_confirmation", "execution_guard"}:
-            return None, {}, "我还不确定你是在确认当前方案、修改条件，还是准备换表。请再明确一点。"
+            return {
+                "resolution": "need_clarification",
+                "message": "我还不确定你是在确认当前方案、修改条件，还是已经开始了一个新问题。请再明确一点。",
+            }
 
-        return "revise", {"text": normalized}, ""
+        return {
+            "resolution": "resolved_to_action",
+            "action_type": "revise",
+            "payload": {"text": normalized},
+        }
+
+    @staticmethod
+    def resolve_natural_language_reply(current_node: str, text: str) -> Tuple[Optional[str], Dict[str, Any], str]:
+        resolution = DraftActionService.resolve_pending_reply(current_node, text)
+        if resolution["resolution"] != "resolved_to_action":
+            return None, {}, resolution.get("message", "")
+        return resolution["action_type"], resolution.get("payload", {}), ""
 
     @staticmethod
     def _ensure_action_allowed(current_node: str, action_type: str) -> None:
@@ -452,16 +546,24 @@ class DraftActionService:
             clarification = ""
 
             if natural_language_reply and not resolved_action:
-                resolved_action, resolved_payload, clarification = self.resolve_natural_language_reply(
+                reply_resolution = self.resolve_pending_reply(
                     current_node,
                     natural_language_reply,
                 )
-                if not resolved_action:
+                if reply_resolution["resolution"] == "resolved_to_new_query":
                     return {
-                        "resolution": "need_clarification",
-                        "message": clarification,
+                        "resolution": "resolved_to_new_query",
+                        "new_query_text": reply_resolution["new_query_text"],
                         "session": session,
                     }
+                if reply_resolution["resolution"] != "resolved_to_action":
+                    return {
+                        "resolution": "need_clarification",
+                        "message": reply_resolution["message"],
+                        "session": session,
+                    }
+                resolved_action = reply_resolution["action_type"]
+                resolved_payload = dict(reply_resolution.get("payload") or {})
             elif not resolved_action:
                 raise ValueError("必须提供 action_type 或 natural_language_reply")
 
