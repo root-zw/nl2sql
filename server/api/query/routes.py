@@ -53,6 +53,7 @@ from server.services.schema_filter_service import SchemaFilterService
 from server.services.permission_service import UserConnectionAccessService
 from server.services.conversation_service import ConversationService, ActiveQueryRegistry
 from server.services.draft_action_service import DraftActionService
+from server.services.learning_event_service import LearningEventService
 from server.services.query_session_service import QuerySessionService
 from server.services.stop_signal_service import StopSignalService, QueryStoppedException
 from server.utils.db_pool import get_metadata_pool
@@ -179,6 +180,59 @@ def _compose_question_with_analysis_context(
     if scope_summary:
         return f"{question_text}\n\n[结果上下文] {resolution_label}。上一结果摘要：{scope_summary}"
     return f"{question_text}\n\n[结果上下文] {resolution_label}。"
+
+
+def _map_query_outcome_event_type(status: str) -> Optional[str]:
+    return {
+        "completed": "execution_completed",
+        "failed": "execution_failed",
+        "cancelled": "execution_cancelled",
+    }.get(status)
+
+
+def _build_query_outcome_event_key(query_id: str, message_id: Optional[UUID], status: str) -> str:
+    return f"query_outcome:{query_id}:{message_id or 'none'}:{status}"
+
+
+async def _emit_query_outcome_event(
+    *,
+    query_id: str,
+    message_id: Optional[UUID],
+    conversation_id: Optional[UUID],
+    user_id: Optional[UUID],
+    status: str,
+    current_node: str,
+    question_text: Optional[str],
+    selected_table_ids: Optional[List[str]] = None,
+    result_row_count: Optional[int] = None,
+    error: Optional[Dict[str, Any]] = None,
+    request_context: Optional[Dict[str, Any]] = None,
+    last_error: Optional[str] = None,
+) -> None:
+    event_type = _map_query_outcome_event_type(status)
+    if not event_type:
+        return
+
+    service = LearningEventService()
+    await service.record_event(
+        event_key=_build_query_outcome_event_key(query_id, message_id, status),
+        event_type=event_type,
+        query_id=_try_uuid(query_id),
+        conversation_id=conversation_id,
+        user_id=user_id,
+        source_component="query_route",
+        payload_json={
+            "query_status": status,
+            "current_node": current_node,
+            "message_id": str(message_id) if message_id else None,
+            "question_text": question_text,
+            "selected_table_ids": [str(table_id) for table_id in selected_table_ids or [] if table_id],
+            "result_row_count": result_row_count,
+            "error": sanitize_for_json(error or {}),
+            "request_context": sanitize_for_json(request_context or {}),
+            "last_error": last_error,
+        },
+    )
 
 
 async def _load_table_display_names(table_ids: List[str]) -> List[str]:
@@ -718,6 +772,23 @@ async def query(
             state_updates=state_updates,
             last_error=last_error,
         )
+        try:
+            await _emit_query_outcome_event(
+                query_id=query_id,
+                message_id=session_message_id,
+                conversation_id=session_conversation_id,
+                user_id=session_user_id,
+                status=status,
+                current_node=current_node,
+                question_text=effective_question_text or request.text,
+                selected_table_ids=list((state_updates or {}).get("selected_table_ids") or []),
+                result_row_count=len(response.result.rows) if response.result and response.result.rows is not None else None,
+                error=response.error,
+                request_context=(state_updates or {}).get("request_context") or request.model_dump(exclude={"ir"}),
+                last_error=last_error,
+            )
+        except Exception as exc:
+            logger.warning("写入查询结果事件失败", query_id=query_id, status=status, error=str(exc))
         return response
 
     async def _return_json_query_response(
@@ -734,6 +805,23 @@ async def query(
             state_updates=state_updates,
             last_error=last_error,
         )
+        try:
+            await _emit_query_outcome_event(
+                query_id=query_id,
+                message_id=session_message_id,
+                conversation_id=session_conversation_id,
+                user_id=session_user_id,
+                status=status,
+                current_node=current_node,
+                question_text=effective_question_text or request.text,
+                selected_table_ids=list((state_updates or {}).get("selected_table_ids") or []),
+                result_row_count=len(response.result.rows) if response.result and response.result.rows is not None else None,
+                error=response.error,
+                request_context=(state_updates or {}).get("request_context") or request.model_dump(exclude={"ir"}),
+                last_error=last_error,
+            )
+        except Exception as exc:
+            logger.warning("写入查询结果事件失败", query_id=query_id, status=status, error=str(exc))
         return JSONResponse(
             content=json.loads(response.model_dump_json()),
             media_type="application/json"
@@ -4040,6 +4128,23 @@ async def query(
             },
             last_error=e.reason,
         )
+        try:
+            await _emit_query_outcome_event(
+                query_id=query_id,
+                message_id=session_message_id,
+                conversation_id=session_conversation_id,
+                user_id=session_user_id,
+                status="cancelled",
+                current_node="cancelled",
+                question_text=effective_question_text or request.text,
+                selected_table_ids=selected_table_ids if 'selected_table_ids' in locals() else [],
+                result_row_count=None,
+                error={"message": e.reason},
+                request_context=request.model_dump(exclude={"ir"}),
+                last_error=e.reason,
+            )
+        except Exception as exc:
+            logger.warning("写入查询取消事件失败", query_id=query_id, error=str(exc))
 
         # 重新抛出，让上层处理
         raise

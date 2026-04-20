@@ -82,6 +82,8 @@
 - `draft_approved`
 - `execution_approved`
 - `execution_completed`
+- `execution_failed`
+- `execution_cancelled`
 - `result_feedback_recorded`
 - `memory_written`
 - `governance_candidate_observed`
