@@ -21,7 +21,14 @@ def test_get_query_session_snapshot_route(monkeypatch):
             "query_id": str(query_id),
             "status": "awaiting_user_action",
             "current_node": "table_resolution",
-            "state_json": {"pending_actions": ["confirm", "change_table"]},
+            "state_json": {
+                "question_text": "查询土地利用现状",
+                "pending_actions": ["confirm", "change_table"],
+                "candidate_snapshot": {
+                    "confirmation_reason": "需要确认目标表",
+                    "candidates": [{"table_id": "table_land_status", "table_name": "土地利用现状表"}],
+                },
+            },
         }
 
     monkeypatch.setattr("server.services.query_session_service.QuerySessionService.get_session", fake_get_session)
@@ -33,6 +40,8 @@ def test_get_query_session_snapshot_route(monkeypatch):
     payload = response.json()
     assert payload["query_id"] == str(query_id)
     assert payload["pending_actions"] == ["confirm", "change_table"]
+    assert payload["confirmation_view"]["pending_actions"] == ["choose_table", "change_table"]
+    assert payload["confirmation_view"]["table_resolution"]["reason_summary"] == "需要确认目标表"
 
 
 def test_submit_query_session_action_route(monkeypatch):

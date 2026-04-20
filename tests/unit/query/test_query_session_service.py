@@ -176,6 +176,85 @@ async def test_get_session_parses_json_string_state():
 
 
 @pytest.mark.asyncio
+async def test_get_session_derives_confirmation_view_for_table_resolution():
+    db = FakeQuerySessionDB()
+    service = QuerySessionService(db)
+    query_id = uuid4()
+
+    await service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="awaiting_user_action",
+        current_node="table_resolution",
+        state_json={
+            "question_text": "查询土地利用现状",
+            "pending_actions": ["confirm", "change_table", "exit_current"],
+            "recommended_table_ids": ["table_land_status"],
+            "candidate_snapshot": {
+                "question": "查询土地利用现状",
+                "confirmation_reason": "存在多个相近业务表，请确认",
+                "candidates": [
+                    {"table_id": "table_land_status", "table_name": "土地利用现状表", "confidence": 0.82},
+                ],
+            },
+        },
+    )
+
+    result = await service.get_session(query_id)
+
+    assert result is not None
+    confirmation_view = result["confirmation_view"]
+    assert confirmation_view["context"]["safe_summary"]["user_goal_summary"] == "查询土地利用现状"
+    assert confirmation_view["context"]["safe_summary"]["open_points"] == ["需确认应使用哪张数据表"]
+    assert confirmation_view["table_resolution"]["status"] == "awaiting_confirmation"
+    assert confirmation_view["table_resolution"]["reason_summary"] == "存在多个相近业务表，请确认"
+    assert confirmation_view["pending_actions"] == ["choose_table", "change_table", "cancel_query"]
+    assert confirmation_view["dependency_meta"]["action_bindings"]["choose_table"] == "confirm"
+    assert confirmation_view["dependency_meta"]["raw_pending_actions"] == ["confirm", "change_table", "exit_current"]
+
+
+@pytest.mark.asyncio
+async def test_update_session_derives_confirmation_view_for_draft_confirmation():
+    db = FakeQuerySessionDB()
+    service = QuerySessionService(db)
+    query_id = uuid4()
+
+    await service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="running",
+        current_node="draft_generation",
+        state_json={
+            "question_text": "查一下武汉土地成交均价",
+            "selected_table_ids": ["table_land_deal"],
+        },
+    )
+
+    updated = await service.update_session(
+        query_id,
+        status="awaiting_user_action",
+        current_node="draft_confirmation",
+        state_updates={
+            "pending_actions": ["confirm", "revise", "change_table", "exit_current"],
+            "draft_confirmation_required": True,
+            "draft_confirmation_card": {
+                "natural_language": "按年份统计武汉土地成交均价",
+                "warnings": ["统计口径依赖成交公告时间"],
+                "ir": {"query_type": "aggregation"},
+            },
+        },
+    )
+
+    assert updated is not None
+    confirmation_view = updated["confirmation_view"]
+    assert confirmation_view["draft"]["status"] == "awaiting_confirmation"
+    assert confirmation_view["draft"]["natural_language"] == "按年份统计武汉土地成交均价"
+    assert confirmation_view["draft"]["warnings"] == ["统计口径依赖成交公告时间"]
+    assert confirmation_view["pending_actions"] == ["confirm_draft", "revise", "change_table", "cancel_query"]
+    assert confirmation_view["dependency_meta"]["selected_table_ids"] == ["table_land_deal"]
+
+
+@pytest.mark.asyncio
 async def test_get_session_returns_none_for_unknown_query():
     db = FakeQuerySessionDB()
     service = QuerySessionService(db)

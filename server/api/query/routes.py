@@ -4045,11 +4045,13 @@ async def get_query_session_snapshot(query_id: str):
         raise HTTPException(status_code=404, detail="查询会话不存在")
 
     state = session.get("state_json") or {}
+    confirmation_view = session.get("confirmation_view") or QuerySessionService.build_confirmation_view(session)
     return {
         "query_id": session["query_id"],
         "status": session["status"],
         "current_node": session["current_node"],
         "pending_actions": state.get("pending_actions", []),
+        "confirmation_view": confirmation_view,
         "state": state,
         "session": session,
     }
