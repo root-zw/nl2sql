@@ -22,6 +22,7 @@ class FakeActionDB:
     def __init__(self):
         self.sessions = {}
         self.actions = []
+        self.learning_events = {}
 
     def transaction(self):
         return FakeTransaction()
@@ -89,6 +90,39 @@ class FakeActionDB:
             self.actions.append(row)
             return row
 
+        if "INSERT INTO learning_events" in query:
+            (
+                event_key,
+                query_id,
+                conversation_id,
+                user_id,
+                event_type,
+                event_version,
+                payload_json,
+                source_component,
+            ) = params
+            existing = self.learning_events.get(event_key)
+            if existing:
+                return None
+
+            row = {
+                "event_id": uuid4(),
+                "event_key": event_key,
+                "query_id": query_id,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "event_type": event_type,
+                "event_version": event_version,
+                "payload_json": json.loads(payload_json),
+                "source_component": source_component,
+                "created_at": datetime.now(timezone.utc),
+            }
+            self.learning_events[event_key] = row
+            return row
+
+        if "FROM learning_events" in query and "WHERE event_key = $1" in query:
+            return self.learning_events.get(params[0])
+
         raise AssertionError(f"unexpected query: {query}")
 
 
@@ -133,6 +167,12 @@ async def test_confirm_action_advances_table_resolution_to_draft_generation():
     assert result["resume_directive"]["text"] == "查询土地成交情况"
     assert result["resume_directive"]["ir"] is None
     assert result["resume_directive"]["progress_text"] == "正在使用确认后的表继续查询..."
+    assert len(db.learning_events) == 1
+    learning_event = next(iter(db.learning_events.values()))
+    assert learning_event["event_type"] == "action_applied"
+    assert learning_event["payload_json"]["action_type"] == "confirm"
+    assert learning_event["payload_json"]["current_node"] == "table_resolution"
+    assert learning_event["payload_json"]["next_node"] == "draft_generation"
 
 
 @pytest.mark.asyncio

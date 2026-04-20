@@ -15,6 +15,7 @@ import asyncpg
 import structlog
 
 from server.services.conversation_service import ActiveQueryRegistry
+from server.services.learning_event_service import LearningEventService
 from server.services.query_session_service import QuerySessionService
 from server.services.stop_signal_service import StopSignalService
 from server.utils.db_pool import get_metadata_pool
@@ -112,6 +113,15 @@ class DraftActionService:
             "idempotency_key": row["idempotency_key"],
             "created_at": row["created_at"],
         }
+
+    @staticmethod
+    def _try_uuid(value: Optional[str]) -> Optional[UUID]:
+        if not value:
+            return None
+        try:
+            return UUID(str(value))
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _looks_like_new_query(text: str) -> bool:
@@ -536,6 +546,7 @@ class DraftActionService:
     ) -> Dict[str, Any]:
         async with self._acquire() as conn:
             session_service = QuerySessionService(conn)
+            learning_event_service = LearningEventService(conn)
             session = await session_service.get_session(query_id)
             if not session:
                 raise ValueError("查询会话不存在")
@@ -642,6 +653,27 @@ class DraftActionService:
                     current_node=next_node,
                     state_updates=state_updates,
                     last_error=None,
+                )
+
+                await learning_event_service.record_event(
+                    event_key=f"draft_action:{row['action_id']}",
+                    event_type="action_applied",
+                    query_id=query_id,
+                    conversation_id=self._try_uuid(session.get("conversation_id")),
+                    user_id=self._try_uuid(session.get("user_id")),
+                    source_component="draft_action_service",
+                    payload_json={
+                        "action_id": str(row["action_id"]),
+                        "draft_version": session_draft_version,
+                        "action_type": resolved_action,
+                        "actor_type": actor_type,
+                        "actor_id": actor_id,
+                        "current_node": current_node,
+                        "next_node": next_node,
+                        "previous_status": session.get("status"),
+                        "next_status": next_status,
+                        "payload": payload_json,
+                    },
                 )
 
             interruption = await self._interrupt_active_query_if_needed(

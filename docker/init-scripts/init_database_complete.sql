@@ -1381,6 +1381,28 @@ CREATE INDEX IF NOT EXISTS idx_draft_actions_query_created
 
 COMMENT ON TABLE draft_actions IS '查询动作时间线表';
 
+CREATE TABLE IF NOT EXISTS learning_events (
+    event_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    event_key VARCHAR(128) NOT NULL,
+    query_id UUID REFERENCES query_sessions(query_id) ON DELETE SET NULL,
+    conversation_id UUID REFERENCES conversations(conversation_id) ON DELETE SET NULL,
+    user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    event_type VARCHAR(64) NOT NULL,
+    event_version INT NOT NULL DEFAULT 1,
+    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    source_component VARCHAR(128) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_events_event_key
+    ON learning_events(event_key);
+CREATE INDEX IF NOT EXISTS idx_learning_events_query_created
+    ON learning_events(query_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_learning_events_type_created
+    ON learning_events(event_type, created_at DESC);
+
+COMMENT ON TABLE learning_events IS '统一学习事件事实表';
+
 -- ============================================================================
 -- 初始化数据
 -- ============================================================================
