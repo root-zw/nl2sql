@@ -170,6 +170,7 @@ class QuerySessionService:
     def build_provisional_draft_state(
         payload: Optional[Any] = None,
         *,
+        status: Optional[str] = None,
         question_text: Optional[str] = None,
         selected_table_ids: Optional[list[str]] = None,
         recommended_table_ids: Optional[list[str]] = None,
@@ -185,7 +186,7 @@ class QuerySessionService:
         ) and not draft_state.get("candidates"):
             return QuerySessionService.build_draft_state(
                 draft_state,
-                status=draft_state.get("status") or "provisional",
+                status=status or draft_state.get("status") or "provisional",
                 natural_language=draft_state.get("natural_language"),
                 draft_json=draft_state.get("draft_json"),
                 warnings=list(draft_state.get("warnings") or []),
@@ -257,12 +258,39 @@ class QuerySessionService:
             warnings.append("当前问题可能涉及多表查询，最终草稿会在确认选表后重新生成。")
 
         return QuerySessionService.build_draft_state(
-            status="provisional",
+            status=status or "provisional",
             natural_language=natural_language,
             draft_json=None,
             warnings=warnings,
             suggestions=[],
             confirmed=False,
+            confirmation_required=False,
+            table_dependent=True,
+            invalidate_on_table_change=True,
+        )
+
+    @staticmethod
+    def build_confirmed_draft_state(
+        payload: Optional[Any] = None,
+        *,
+        natural_language: Optional[str] = None,
+        draft_json: Optional[Dict[str, Any]] = None,
+        warnings: Optional[list[Any]] = None,
+        suggestions: Optional[list[Any]] = None,
+    ) -> Dict[str, Any]:
+        draft_state = QuerySessionService._normalize_confirmation_state(payload)
+        return QuerySessionService.build_draft_state(
+            draft_state,
+            status="confirmed",
+            natural_language=natural_language or draft_state.get("natural_language"),
+            draft_json=(
+                draft_json
+                if draft_json is not None
+                else draft_state.get("draft_json") or draft_state.get("ir")
+            ),
+            warnings=list(warnings if warnings is not None else draft_state.get("warnings") or []),
+            suggestions=list(suggestions if suggestions is not None else draft_state.get("suggestions") or []),
+            confirmed=True,
             confirmation_required=False,
             table_dependent=True,
             invalidate_on_table_change=True,
@@ -447,24 +475,28 @@ class QuerySessionService:
             draft_confirmation_card,
             draft_json=draft_confirmation_card.get("ir") or ir_snapshot or None,
         )
+        active_draft_state: Dict[str, Any]
         if provisional_draft:
             status = provisional_draft.get("status") or "provisional"
             natural_language = provisional_draft.get("natural_language")
             draft_json = provisional_draft.get("draft_json")
             warnings = list(provisional_draft.get("warnings") or [])
             suggestions = list(provisional_draft.get("suggestions") or [])
+            active_draft_state = provisional_draft
         elif confirmed_draft:
             status = confirmed_draft.get("status") or "confirmed"
             natural_language = confirmed_draft.get("natural_language")
             draft_json = confirmed_draft.get("draft_json")
             warnings = list(confirmed_draft.get("warnings") or [])
             suggestions = list(confirmed_draft.get("suggestions") or [])
+            active_draft_state = confirmed_draft
         elif table_resolution_provisional_draft:
             status = table_resolution_provisional_draft.get("status") or "provisional"
             natural_language = table_resolution_provisional_draft.get("natural_language")
             draft_json = table_resolution_provisional_draft.get("draft_json")
             warnings = list(table_resolution_provisional_draft.get("warnings") or [])
             suggestions = list(table_resolution_provisional_draft.get("suggestions") or [])
+            active_draft_state = table_resolution_provisional_draft
         else:
             if current_node == "draft_confirmation":
                 status = "awaiting_confirmation"
@@ -476,30 +508,21 @@ class QuerySessionService:
             draft_json = derived_draft_state.get("draft_json") or derived_draft_state.get("ir") or ir_snapshot or None
             warnings = list(derived_draft_state.get("warnings") or [])
             suggestions = list(derived_draft_state.get("suggestions") or [])
+            active_draft_state = derived_draft_state
 
         confirmed = state.get("draft_confirmation_approved")
         if confirmed is None:
-            confirmed = (
-                table_resolution_provisional_draft.get("confirmed")
-                if table_resolution_provisional_draft
-                else derived_draft_state.get("confirmed")
-            )
+            confirmed = active_draft_state.get("confirmed")
 
         confirmation_required = state.get("draft_confirmation_required")
         if confirmation_required is None:
-            confirmation_required = (
-                table_resolution_provisional_draft.get("confirmation_required")
-                if table_resolution_provisional_draft
-                else derived_draft_state.get("confirmation_required")
-            )
+            confirmation_required = active_draft_state.get("confirmation_required")
 
-        base_draft_state = table_resolution_provisional_draft or derived_draft_state
-
-        table_dependent = base_draft_state.get("table_dependent")
+        table_dependent = active_draft_state.get("table_dependent")
         if table_dependent is None:
             table_dependent = True
 
-        invalidate_on_table_change = base_draft_state.get("invalidate_on_table_change")
+        invalidate_on_table_change = active_draft_state.get("invalidate_on_table_change")
         if invalidate_on_table_change is None:
             invalidate_on_table_change = True
 

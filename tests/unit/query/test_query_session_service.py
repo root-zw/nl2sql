@@ -428,6 +428,45 @@ async def test_update_session_derives_confirmation_view_from_unified_draft_state
 
 
 @pytest.mark.asyncio
+async def test_get_session_derives_confirmation_view_from_explicit_confirmed_draft():
+    db = FakeQuerySessionDB()
+    service = QuerySessionService(db)
+    query_id = uuid4()
+
+    await service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="running",
+        current_node="draft_generation",
+        state_json={
+            "question_text": "查一下武汉土地成交均价",
+            "selected_table_ids": ["table_land_deal"],
+            "confirmed_draft": {
+                "status": "confirmed",
+                "natural_language": "按年份统计武汉土地成交均价",
+                "draft_json": {"query_type": "aggregation"},
+                "warnings": ["统计口径依赖成交公告时间"],
+                "suggestions": [],
+                "confirmed": True,
+                "confirmation_required": False,
+                "table_dependent": True,
+                "invalidate_on_table_change": True,
+            },
+        },
+    )
+
+    result = await service.get_session(query_id)
+
+    assert result is not None
+    confirmation_view = result["confirmation_view"]
+    assert confirmation_view["draft"]["status"] == "confirmed"
+    assert confirmation_view["draft"]["natural_language"] == "按年份统计武汉土地成交均价"
+    assert confirmation_view["draft"]["draft_json"] == {"query_type": "aggregation"}
+    assert confirmation_view["draft"]["confirmed"] is True
+    assert confirmation_view["draft"]["confirmation_required"] is False
+
+
+@pytest.mark.asyncio
 async def test_get_session_derives_confirmation_view_from_unified_execution_guard_state():
     db = FakeQuerySessionDB()
     service = QuerySessionService(db)

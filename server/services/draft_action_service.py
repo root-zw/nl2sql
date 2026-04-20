@@ -331,6 +331,18 @@ class DraftActionService:
         if action_type == "confirm":
             selected_table_ids = payload.get("selected_table_ids") or state.get("selected_table_ids") or state.get("recommended_table_ids") or []
             if current_node == "draft_confirmation":
+                draft_payload = (
+                    QuerySessionService._normalize_state(state.get("provisional_draft"))
+                    or QuerySessionService._normalize_state(state.get("draft_state"))
+                )
+                confirmed_draft = QuerySessionService.build_confirmed_draft_state(
+                    draft_payload,
+                    draft_json=(
+                        draft_payload.get("draft_json")
+                        or QuerySessionService._normalize_state(state.get("ir_snapshot"))
+                        or None
+                    ),
+                )
                 return (
                     "running",
                     "draft_generation",
@@ -338,6 +350,8 @@ class DraftActionService:
                         "pending_actions": [],
                         "selected_table_ids": selected_table_ids,
                         "selected_table_id": selected_table_ids[0] if selected_table_ids else state.get("selected_table_id"),
+                        "provisional_draft": None,
+                        "confirmed_draft": confirmed_draft,
                         "draft_confirmation_approved": True,
                         "interruption_requested": False,
                         "last_action": "confirm",
@@ -353,6 +367,7 @@ class DraftActionService:
                     "draft_version": draft_version + 1,
                     "invalidated_artifacts": [],
                     "provisional_draft": None,
+                    "confirmed_draft": None,
                     "draft_confirmation_required": True,
                     "draft_confirmation_approved": False,
                     "draft_state": None,
@@ -383,6 +398,7 @@ class DraftActionService:
                     "sql_preview": None,
                     "result_meta": None,
                     "provisional_draft": None,
+                    "confirmed_draft": None,
                     "execution_guard_state": None,
                     "execution_guard": None,
                     "draft_state": None,
@@ -417,6 +433,7 @@ class DraftActionService:
                     "sql_preview": None,
                     "result_meta": None,
                     "provisional_draft": None,
+                    "confirmed_draft": None,
                     "execution_guard_state": None,
                     "execution_guard": None,
                     "draft_state": None,

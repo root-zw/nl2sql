@@ -255,6 +255,16 @@ async def test_confirm_from_draft_confirmation_marks_draft_as_approved():
             "pending_actions": ["confirm", "revise", "change_table", "request_explanation", "exit_current"],
             "selected_table_ids": ["table_land_deal"],
             "ir_snapshot": {"query_type": "aggregation"},
+            "provisional_draft": {
+                "status": "awaiting_confirmation",
+                "natural_language": "按年份统计武汉土地成交均价",
+                "draft_json": {"query_type": "aggregation"},
+                "warnings": ["统计口径依赖成交公告时间"],
+                "confirmed": False,
+                "confirmation_required": False,
+                "table_dependent": True,
+                "invalidate_on_table_change": True,
+            },
         },
     )
 
@@ -273,6 +283,10 @@ async def test_confirm_from_draft_confirmation_marks_draft_as_approved():
     assert result["action"]["action_type"] == "confirm"
     assert result["session"]["current_node"] == "draft_generation"
     assert result["session"]["state_json"]["draft_confirmation_approved"] is True
+    assert result["session"]["state_json"]["provisional_draft"] is None
+    assert result["session"]["state_json"]["confirmed_draft"]["status"] == "confirmed"
+    assert result["session"]["state_json"]["confirmed_draft"]["natural_language"] == "按年份统计武汉土地成交均价"
+    assert result["session"]["state_json"]["confirmed_draft"]["draft_json"] == {"query_type": "aggregation"}
     assert result["session"]["state_json"]["selected_table_ids"] == ["table_land_deal"]
     assert result["resume_directive"]["should_resume"] is True
     assert result["resume_directive"]["text"] == "查询土地成交均价"
