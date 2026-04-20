@@ -141,6 +141,10 @@ async def test_confirm_action_advances_table_resolution_to_draft_generation():
             "question_text": "查询土地成交情况",
             "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
             "recommended_table_ids": ["table_land_deal"],
+            "provisional_draft": {
+                "status": "provisional",
+                "natural_language": "按土地成交表生成的暂定草稿",
+            },
             "table_resolution_state": {
                 "recommended_table_ids": ["table_land_deal"],
                 "multi_table_mode": "union",
@@ -167,6 +171,7 @@ async def test_confirm_action_advances_table_resolution_to_draft_generation():
     assert result["session"]["state_json"]["selected_table_ids"] == ["table_land_deal"]
     assert result["session"]["state_json"]["draft_confirmation_required"] is True
     assert result["session"]["state_json"]["draft_confirmation_approved"] is False
+    assert result["session"]["state_json"]["provisional_draft"] is None
     assert result["session"]["state_json"]["draft_state"] is None
     assert result["resume_directive"]["should_resume"] is True
     assert result["resume_directive"]["text"] == "查询土地成交情况"
@@ -402,6 +407,10 @@ async def test_natural_language_change_table_invalidates_ir_artifacts():
             "draft_version": 2,
             "pending_actions": ["change_table", "revise", "request_explanation", "exit_current"],
             "selected_table_ids": ["table_land_deal"],
+            "provisional_draft": {
+                "status": "provisional",
+                "natural_language": "旧的暂定草稿",
+            },
             "draft_state": {
                 "natural_language": "查询土地成交情况",
                 "draft_json": {"query_type": "aggregation"},
@@ -431,6 +440,7 @@ async def test_natural_language_change_table_invalidates_ir_artifacts():
     assert result["session"]["state_json"]["ir_ready"] is False
     assert result["session"]["state_json"]["ir_snapshot"] is None
     assert result["session"]["state_json"]["sql_preview"] is None
+    assert result["session"]["state_json"]["provisional_draft"] is None
     assert result["session"]["state_json"]["draft_state"] is None
     assert result["session"]["state_json"]["execution_guard_state"] is None
     assert "table_land_deal" in result["session"]["state_json"]["rejected_table_ids"]

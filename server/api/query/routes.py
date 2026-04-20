@@ -969,6 +969,12 @@ async def query(
                                     question_text=effective_question_text,
                                     selected_table_ids=selected_table_ids,
                                 ),
+                                "provisional_draft": QuerySessionService.build_provisional_draft_state(
+                                    pending_card,
+                                    question_text=effective_question_text,
+                                    selected_table_ids=selected_table_ids,
+                                    recommended_table_ids=list(getattr(pending_card, "recommended_table_ids", []) or []),
+                                ),
                                 "recommended_table_ids": list(getattr(pending_card, "recommended_table_ids", []) or []),
                                 "selected_table_ids": selected_table_ids,
                             },
@@ -1052,6 +1058,12 @@ async def query(
                                 pending_card,
                                 question_text=effective_question_text,
                                 selected_table_ids=selected_table_ids,
+                            ),
+                            "provisional_draft": QuerySessionService.build_provisional_draft_state(
+                                pending_card,
+                                question_text=effective_question_text,
+                                selected_table_ids=selected_table_ids,
+                                recommended_table_ids=list(getattr(pending_card, "recommended_table_ids", []) or []),
                             ),
                             "recommended_table_ids": list(getattr(pending_card, "recommended_table_ids", []) or []),
                             "selected_table_ids": selected_table_ids,
@@ -1160,6 +1172,12 @@ async def query(
                         question_text=effective_question_text,
                         selected_table_ids=selected_table_ids,
                     ),
+                    "provisional_draft": QuerySessionService.build_provisional_draft_state(
+                        pending_card,
+                        question_text=effective_question_text,
+                        selected_table_ids=selected_table_ids,
+                        recommended_table_ids=list(getattr(pending_card, "recommended_table_ids", []) or []),
+                    ),
                     "recommended_table_ids": list(getattr(pending_card, "recommended_table_ids", []) or []),
                     "selected_table_ids": selected_table_ids,
                 },
@@ -1229,6 +1247,7 @@ async def query(
             selected_table_ids=selected_table_ids,
             multi_table_mode=cross_partition_mode,
         ),
+        "provisional_draft": None,
     }
     await _update_query_session(
         status="running",
@@ -2066,6 +2085,12 @@ async def query(
                                             question_text=effective_question_text,
                                             selected_table_ids=selected_table_ids,
                                         ),
+                                        "provisional_draft": QuerySessionService.build_provisional_draft_state(
+                                            fallback_card,
+                                            question_text=effective_question_text,
+                                            selected_table_ids=selected_table_ids,
+                                            recommended_table_ids=list(fallback_card.recommended_table_ids or []),
+                                        ),
                                         "recommended_table_ids": list(fallback_card.recommended_table_ids or []),
                                         "selected_table_ids": selected_table_ids,
                                     },
@@ -2116,6 +2141,12 @@ async def query(
                                             fallback_card,
                                             question_text=effective_question_text,
                                             selected_table_ids=selected_table_ids,
+                                        ),
+                                        "provisional_draft": QuerySessionService.build_provisional_draft_state(
+                                            fallback_card,
+                                            question_text=effective_question_text,
+                                            selected_table_ids=selected_table_ids,
+                                            recommended_table_ids=list(fallback_card.recommended_table_ids or []),
                                         ),
                                         "recommended_table_ids": list(fallback_card.recommended_table_ids or []),
                                         "selected_table_ids": selected_table_ids,
@@ -2485,6 +2516,7 @@ async def query(
                 current_node="draft_confirmation",
                 state_updates={
                     "pending_actions": ["confirm", "revise", "change_table", "request_explanation", "exit_current"],
+                    "provisional_draft": None,
                     "draft_state": QuerySessionService.build_draft_state(
                         confirm_card,
                         status="awaiting_confirmation",

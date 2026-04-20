@@ -297,6 +297,50 @@ async def test_get_session_derives_provisional_draft_for_table_resolution():
 
 
 @pytest.mark.asyncio
+async def test_get_session_prefers_explicit_provisional_draft_state_for_table_resolution():
+    db = FakeQuerySessionDB()
+    service = QuerySessionService(db)
+    query_id = uuid4()
+
+    await service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="awaiting_user_action",
+        current_node="table_resolution",
+        state_json={
+            "question_text": "查询土地利用现状",
+            "pending_actions": ["confirm", "change_table"],
+            "table_resolution_state": {
+                "question": "查询土地利用现状",
+                "candidates": [
+                    {"table_id": "table_land_status", "table_name": "土地利用现状表", "confidence": 0.82},
+                ],
+                "recommended_table_ids": ["table_land_status"],
+            },
+            "provisional_draft": {
+                "status": "provisional",
+                "natural_language": "这是显式写入的暂定草稿。",
+                "warnings": ["当前仍需确认最终表。"],
+                "confirmed": False,
+                "confirmation_required": False,
+                "table_dependent": True,
+                "invalidate_on_table_change": True,
+            },
+        },
+    )
+
+    result = await service.get_session(query_id)
+
+    assert result is not None
+    draft = result["confirmation_view"]["draft"]
+    assert draft["status"] == "provisional"
+    assert draft["natural_language"] == "这是显式写入的暂定草稿。"
+    assert draft["warnings"] == ["当前仍需确认最终表。"]
+    assert draft["confirmed"] is False
+    assert draft["confirmation_required"] is False
+
+
+@pytest.mark.asyncio
 async def test_update_session_derives_confirmation_view_for_draft_confirmation():
     db = FakeQuerySessionDB()
     service = QuerySessionService(db)

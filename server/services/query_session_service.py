@@ -167,6 +167,108 @@ class QuerySessionService:
         )
 
     @staticmethod
+    def build_provisional_draft_state(
+        payload: Optional[Any] = None,
+        *,
+        question_text: Optional[str] = None,
+        selected_table_ids: Optional[list[str]] = None,
+        recommended_table_ids: Optional[list[str]] = None,
+        manual_table_override: Optional[bool] = None,
+        allow_multi_select: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        draft_state = QuerySessionService._normalize_confirmation_state(payload)
+
+        # 如果传入的已经是草稿形态，直接规整为 provisional draft。
+        if any(
+            draft_state.get(field) is not None
+            for field in ("natural_language", "draft_json", "status", "warnings", "suggestions")
+        ) and not draft_state.get("candidates"):
+            return QuerySessionService.build_draft_state(
+                draft_state,
+                status=draft_state.get("status") or "provisional",
+                natural_language=draft_state.get("natural_language"),
+                draft_json=draft_state.get("draft_json"),
+                warnings=list(draft_state.get("warnings") or []),
+                suggestions=list(draft_state.get("suggestions") or []),
+                confirmed=False,
+                confirmation_required=False,
+                table_dependent=True,
+                invalidate_on_table_change=True,
+            )
+
+        candidates = list(draft_state.get("candidates") or [])
+        preferred_table_ids = list(selected_table_ids or recommended_table_ids or [])
+
+        candidate_names: list[str] = []
+        seen_names: set[str] = set()
+        for candidate in candidates:
+            table_id = candidate.get("table_id")
+            table_name = candidate.get("table_name")
+            if not table_name or table_name in seen_names:
+                continue
+            if preferred_table_ids and table_id not in preferred_table_ids:
+                continue
+            seen_names.add(table_name)
+            candidate_names.append(table_name)
+
+        if not candidate_names:
+            for candidate in candidates:
+                table_name = candidate.get("table_name")
+                if not table_name or table_name in seen_names:
+                    continue
+                seen_names.add(table_name)
+                candidate_names.append(table_name)
+                if len(candidate_names) >= 2:
+                    break
+
+        candidate_names = candidate_names[:2]
+        table_hint = "、".join(candidate_names)
+        resolved_manual_table_override = (
+            bool(manual_table_override)
+            if manual_table_override is not None
+            else bool(draft_state.get("manual_table_override"))
+        )
+
+        if resolved_manual_table_override:
+            natural_language = (
+                f"当前问题是“{question_text}”。系统已切换为手动选表，确认数据表后会重新生成查询草稿。"
+                if question_text
+                else "系统已切换为手动选表，确认数据表后会重新生成查询草稿。"
+            )
+        elif table_hint and question_text:
+            natural_language = (
+                f"当前暂按候选表“{table_hint}”理解您的问题“{question_text}”，"
+                "确认选表后系统会继续细化查询草稿。"
+            )
+        elif question_text:
+            natural_language = f"系统已根据问题“{question_text}”生成暂定查询理解，确认选表后会继续细化查询草稿。"
+        elif table_hint:
+            natural_language = f"系统已基于候选表“{table_hint}”生成暂定查询理解，确认选表后会继续细化查询草稿。"
+        else:
+            natural_language = "系统已生成暂定查询理解，确认选表后会继续细化查询草稿。"
+
+        resolved_allow_multi_select = (
+            bool(allow_multi_select)
+            if allow_multi_select is not None
+            else bool(draft_state.get("allow_multi_select"))
+        )
+        warnings: list[str] = []
+        if len(preferred_table_ids) > 1 or resolved_allow_multi_select:
+            warnings.append("当前问题可能涉及多表查询，最终草稿会在确认选表后重新生成。")
+
+        return QuerySessionService.build_draft_state(
+            status="provisional",
+            natural_language=natural_language,
+            draft_json=None,
+            warnings=warnings,
+            suggestions=[],
+            confirmed=False,
+            confirmation_required=False,
+            table_dependent=True,
+            invalidate_on_table_change=True,
+        )
+
+    @staticmethod
     def build_execution_guard_state(
         payload: Optional[Any] = None,
         *,
@@ -296,86 +398,28 @@ class QuerySessionService:
         if not any([table_resolution_state, candidate_snapshot]):
             return None
 
-        question_text = (
-            state.get("resolved_question_text")
-            or state.get("question_text")
-            or table_resolution_state.get("question")
-            or candidate_snapshot.get("question")
+        return QuerySessionService.build_provisional_draft_state(
+            table_resolution_state or candidate_snapshot,
+            question_text=(
+                state.get("resolved_question_text")
+                or state.get("question_text")
+                or table_resolution_state.get("question")
+                or candidate_snapshot.get("question")
+            ),
+            selected_table_ids=QuerySessionService._get_selected_table_ids(state),
+            recommended_table_ids=list(
+                state.get("recommended_table_ids")
+                or table_resolution_state.get("recommended_table_ids")
+                or candidate_snapshot.get("recommended_table_ids")
+                or []
+            ),
+            manual_table_override=(
+                state.get("manual_table_override")
+                if state.get("manual_table_override") is not None
+                else table_resolution_state.get("manual_table_override")
+            ),
+            allow_multi_select=table_resolution_state.get("allow_multi_select"),
         )
-
-        candidates = list(table_resolution_state.get("candidates") or candidate_snapshot.get("candidates") or [])
-        recommended_table_ids = list(
-            state.get("recommended_table_ids")
-            or table_resolution_state.get("recommended_table_ids")
-            or candidate_snapshot.get("recommended_table_ids")
-            or []
-        )
-        selected_table_ids = QuerySessionService._get_selected_table_ids(state)
-        preferred_table_ids = selected_table_ids or recommended_table_ids
-
-        candidate_names: list[str] = []
-        seen_names: set[str] = set()
-        for candidate in candidates:
-            table_id = candidate.get("table_id")
-            table_name = candidate.get("table_name")
-            if not table_name or table_name in seen_names:
-                continue
-            if preferred_table_ids and table_id not in preferred_table_ids:
-                continue
-            seen_names.add(table_name)
-            candidate_names.append(table_name)
-
-        if not candidate_names:
-            for candidate in candidates:
-                table_name = candidate.get("table_name")
-                if not table_name or table_name in seen_names:
-                    continue
-                seen_names.add(table_name)
-                candidate_names.append(table_name)
-                if len(candidate_names) >= 2:
-                    break
-
-        candidate_names = candidate_names[:2]
-        table_hint = "、".join(candidate_names)
-        manual_table_override = bool(
-            state.get("manual_table_override")
-            if state.get("manual_table_override") is not None
-            else table_resolution_state.get("manual_table_override")
-        )
-
-        if manual_table_override:
-            natural_language = (
-                f"当前问题是“{question_text}”。系统已切换为手动选表，确认数据表后会重新生成查询草稿。"
-                if question_text
-                else "系统已切换为手动选表，确认数据表后会重新生成查询草稿。"
-            )
-        elif table_hint and question_text:
-            natural_language = (
-                f"当前暂按候选表“{table_hint}”理解您的问题“{question_text}”，"
-                "确认选表后系统会继续细化查询草稿。"
-            )
-        elif question_text:
-            natural_language = f"系统已根据问题“{question_text}”生成暂定查询理解，确认选表后会继续细化查询草稿。"
-        elif table_hint:
-            natural_language = f"系统已基于候选表“{table_hint}”生成暂定查询理解，确认选表后会继续细化查询草稿。"
-        else:
-            natural_language = "系统已生成暂定查询理解，确认选表后会继续细化查询草稿。"
-
-        warnings: list[str] = []
-        if len(preferred_table_ids) > 1 or bool(table_resolution_state.get("allow_multi_select")):
-            warnings.append("当前问题可能涉及多表查询，最终草稿会在确认选表后重新生成。")
-
-        return {
-            "status": "provisional",
-            "table_dependent": True,
-            "invalidate_on_table_change": True,
-            "natural_language": natural_language,
-            "draft_json": None,
-            "warnings": warnings,
-            "suggestions": [],
-            "confirmed": False,
-            "confirmation_required": False,
-        }
 
     @staticmethod
     def _build_draft(current_node: Optional[str], state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
