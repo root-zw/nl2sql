@@ -284,14 +284,119 @@ class QuerySessionService:
         }
 
     @staticmethod
+    def _build_table_resolution_provisional_draft(
+        current_node: Optional[str],
+        state: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if current_node != "table_resolution":
+            return None
+
+        table_resolution_state = QuerySessionService._normalize_confirmation_state(state.get("table_resolution_state"))
+        candidate_snapshot = QuerySessionService._normalize_state(state.get("candidate_snapshot"))
+        if not any([table_resolution_state, candidate_snapshot]):
+            return None
+
+        question_text = (
+            state.get("resolved_question_text")
+            or state.get("question_text")
+            or table_resolution_state.get("question")
+            or candidate_snapshot.get("question")
+        )
+
+        candidates = list(table_resolution_state.get("candidates") or candidate_snapshot.get("candidates") or [])
+        recommended_table_ids = list(
+            state.get("recommended_table_ids")
+            or table_resolution_state.get("recommended_table_ids")
+            or candidate_snapshot.get("recommended_table_ids")
+            or []
+        )
+        selected_table_ids = QuerySessionService._get_selected_table_ids(state)
+        preferred_table_ids = selected_table_ids or recommended_table_ids
+
+        candidate_names: list[str] = []
+        seen_names: set[str] = set()
+        for candidate in candidates:
+            table_id = candidate.get("table_id")
+            table_name = candidate.get("table_name")
+            if not table_name or table_name in seen_names:
+                continue
+            if preferred_table_ids and table_id not in preferred_table_ids:
+                continue
+            seen_names.add(table_name)
+            candidate_names.append(table_name)
+
+        if not candidate_names:
+            for candidate in candidates:
+                table_name = candidate.get("table_name")
+                if not table_name or table_name in seen_names:
+                    continue
+                seen_names.add(table_name)
+                candidate_names.append(table_name)
+                if len(candidate_names) >= 2:
+                    break
+
+        candidate_names = candidate_names[:2]
+        table_hint = "、".join(candidate_names)
+        manual_table_override = bool(
+            state.get("manual_table_override")
+            if state.get("manual_table_override") is not None
+            else table_resolution_state.get("manual_table_override")
+        )
+
+        if manual_table_override:
+            natural_language = (
+                f"当前问题是“{question_text}”。系统已切换为手动选表，确认数据表后会重新生成查询草稿。"
+                if question_text
+                else "系统已切换为手动选表，确认数据表后会重新生成查询草稿。"
+            )
+        elif table_hint and question_text:
+            natural_language = (
+                f"当前暂按候选表“{table_hint}”理解您的问题“{question_text}”，"
+                "确认选表后系统会继续细化查询草稿。"
+            )
+        elif question_text:
+            natural_language = f"系统已根据问题“{question_text}”生成暂定查询理解，确认选表后会继续细化查询草稿。"
+        elif table_hint:
+            natural_language = f"系统已基于候选表“{table_hint}”生成暂定查询理解，确认选表后会继续细化查询草稿。"
+        else:
+            natural_language = "系统已生成暂定查询理解，确认选表后会继续细化查询草稿。"
+
+        warnings: list[str] = []
+        if len(preferred_table_ids) > 1 or bool(table_resolution_state.get("allow_multi_select")):
+            warnings.append("当前问题可能涉及多表查询，最终草稿会在确认选表后重新生成。")
+
+        return {
+            "status": "provisional",
+            "table_dependent": True,
+            "invalidate_on_table_change": True,
+            "natural_language": natural_language,
+            "draft_json": None,
+            "warnings": warnings,
+            "suggestions": [],
+            "confirmed": False,
+            "confirmation_required": False,
+        }
+
+    @staticmethod
     def _build_draft(current_node: Optional[str], state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         provisional_draft = QuerySessionService._normalize_state(state.get("provisional_draft"))
         confirmed_draft = QuerySessionService._normalize_state(state.get("confirmed_draft"))
         draft_state = QuerySessionService._normalize_confirmation_state(state.get("draft_state"))
         draft_confirmation_card = QuerySessionService._normalize_state(state.get("draft_confirmation_card"))
         ir_snapshot = QuerySessionService._normalize_state(state.get("ir_snapshot"))
+        table_resolution_provisional_draft = QuerySessionService._build_table_resolution_provisional_draft(
+            current_node,
+            state,
+        )
 
-        if not any([provisional_draft, confirmed_draft, draft_state, draft_confirmation_card, ir_snapshot]):
+        if not any([
+            provisional_draft,
+            confirmed_draft,
+            draft_state,
+            draft_confirmation_card,
+            ir_snapshot,
+            table_resolution_provisional_draft,
+        ]):
             return None
 
         derived_draft_state = draft_state or QuerySessionService.build_draft_state(
@@ -310,6 +415,12 @@ class QuerySessionService:
             draft_json = confirmed_draft.get("draft_json")
             warnings = list(confirmed_draft.get("warnings") or [])
             suggestions = list(confirmed_draft.get("suggestions") or [])
+        elif table_resolution_provisional_draft:
+            status = table_resolution_provisional_draft.get("status") or "provisional"
+            natural_language = table_resolution_provisional_draft.get("natural_language")
+            draft_json = table_resolution_provisional_draft.get("draft_json")
+            warnings = list(table_resolution_provisional_draft.get("warnings") or [])
+            suggestions = list(table_resolution_provisional_draft.get("suggestions") or [])
         else:
             if current_node == "draft_confirmation":
                 status = "awaiting_confirmation"
@@ -324,17 +435,27 @@ class QuerySessionService:
 
         confirmed = state.get("draft_confirmation_approved")
         if confirmed is None:
-            confirmed = derived_draft_state.get("confirmed")
+            confirmed = (
+                table_resolution_provisional_draft.get("confirmed")
+                if table_resolution_provisional_draft
+                else derived_draft_state.get("confirmed")
+            )
 
         confirmation_required = state.get("draft_confirmation_required")
         if confirmation_required is None:
-            confirmation_required = derived_draft_state.get("confirmation_required")
+            confirmation_required = (
+                table_resolution_provisional_draft.get("confirmation_required")
+                if table_resolution_provisional_draft
+                else derived_draft_state.get("confirmation_required")
+            )
 
-        table_dependent = derived_draft_state.get("table_dependent")
+        base_draft_state = table_resolution_provisional_draft or derived_draft_state
+
+        table_dependent = base_draft_state.get("table_dependent")
         if table_dependent is None:
             table_dependent = True
 
-        invalidate_on_table_change = derived_draft_state.get("invalidate_on_table_change")
+        invalidate_on_table_change = base_draft_state.get("invalidate_on_table_change")
         if invalidate_on_table_change is None:
             invalidate_on_table_change = True
 
