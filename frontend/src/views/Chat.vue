@@ -2180,6 +2180,20 @@ async function continueQueryFromPendingState({
   })
 }
 
+async function continueQueryFromResumeDirective(resumeDirective = {}) {
+  if (!resumeDirective?.should_resume) return
+
+  await continueQueryFromPendingState({
+    text: resumeDirective.text || pendingQueryText.value,
+    ir: resumeDirective.ir || null,
+    queryId: resumeDirective.query_id || pendingSessionSnapshot.value?.query_id || originalQueryId.value,
+    selectedTableIds: resumeDirective.selected_table_ids || selectedTableIds.value,
+    multiTableMode: resumeDirective.multi_table_mode || pendingTableSelection.value?.multi_table_mode || null,
+    forceExecute: Boolean(resumeDirective.force_execute),
+    progressText: resumeDirective.progress_text || '思考中...'
+  })
+}
+
 async function submitPendingSessionAction({
   actionType = null,
   payload = {},
@@ -2213,35 +2227,13 @@ async function submitPendingSessionAction({
     const snapshot = applyPendingSessionSnapshot(result?.session, { preserveSelection })
     const currentState = snapshot?.state || {}
 
-    if (result?.action?.action_type === 'confirm' && snapshot?.current_node === 'draft_generation') {
-      const resumeIr = currentState.draft_confirmation_approved ? (currentState.ir_snapshot || null) : null
-      await continueQueryFromPendingState({
-        text: currentState.resolved_question_text || currentState.question_text || pendingQueryText.value,
-        ir: resumeIr,
-        queryId: snapshot.query_id || queryId,
-        selectedTableIds: currentState.selected_table_ids || selectedTableIds.value,
-        multiTableMode: currentState.multi_table_mode || pendingTableSelection.value?.multi_table_mode || currentState.candidate_snapshot?.multi_table_mode || null,
-        forceExecute: false,
-        progressText: resumeIr ? '正在基于已确认草稿继续查询...' : '正在使用确认后的表继续查询...'
-      })
-      return result
-    }
-
-    if (result?.action?.action_type === 'execution_decision' && snapshot?.current_node === 'execution_approved') {
-      await continueQueryFromPendingState({
-        text: currentState.resolved_question_text || currentState.question_text || pendingQueryText.value,
-        ir: currentState.ir_snapshot || null,
-        queryId: snapshot.query_id || queryId,
-        selectedTableIds: currentState.selected_table_ids || selectedTableIds.value,
-        multiTableMode: currentState.multi_table_mode || currentState.candidate_snapshot?.multi_table_mode || null,
-        forceExecute: true,
-        progressText: '正在继续执行查询...'
-      })
+    if (result?.resume_directive?.should_resume) {
+      await continueQueryFromResumeDirective(result.resume_directive)
       return result
     }
 
     if (result?.action?.action_type === 'change_table') {
-      if (snapshot?.state?.manual_table_override) {
+      if (isManualTableOverride(snapshot)) {
         await expandAllTables()
       } else if (visibleCandidates.value.length === 0) {
         await expandAllTables()
@@ -2255,17 +2247,6 @@ async function submitPendingSessionAction({
     }
 
     if (result?.action?.action_type === 'revise') {
-      if (snapshot?.current_node === 'draft_generation') {
-        await continueQueryFromPendingState({
-          text: currentState.question_text || pendingQueryText.value,
-          queryId: snapshot.query_id || queryId,
-          selectedTableIds: currentState.selected_table_ids || selectedTableIds.value,
-          multiTableMode: currentState.multi_table_mode || pendingTableSelection.value?.multi_table_mode || currentState.candidate_snapshot?.multi_table_mode || null,
-          forceExecute: false,
-          progressText: '正在根据修改意见重算确认稿...'
-        })
-        return result
-      }
       appendAssistantInfoMessage('修改意见已记录，请继续确认。')
       return result
     }

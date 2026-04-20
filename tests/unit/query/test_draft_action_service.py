@@ -104,6 +104,7 @@ async def test_confirm_action_advances_table_resolution_to_draft_generation():
         current_node="table_resolution",
         state_json={
             "draft_version": 1,
+            "question_text": "查询土地成交情况",
             "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
             "recommended_table_ids": ["table_land_deal"],
         },
@@ -128,6 +129,10 @@ async def test_confirm_action_advances_table_resolution_to_draft_generation():
     assert result["session"]["state_json"]["selected_table_ids"] == ["table_land_deal"]
     assert result["session"]["state_json"]["draft_confirmation_required"] is True
     assert result["session"]["state_json"]["draft_confirmation_approved"] is False
+    assert result["resume_directive"]["should_resume"] is True
+    assert result["resume_directive"]["text"] == "查询土地成交情况"
+    assert result["resume_directive"]["ir"] is None
+    assert result["resume_directive"]["progress_text"] == "正在使用确认后的表继续查询..."
 
 
 @pytest.mark.asyncio
@@ -142,6 +147,7 @@ async def test_revise_action_advances_to_draft_generation_and_keeps_revision_req
         current_node="execution_guard",
         state_json={
             "draft_version": 2,
+            "question_text": "查询土地成交情况",
             "pending_actions": ["execution_decision", "revise", "change_table", "request_explanation", "exit_current"],
             "selected_table_ids": ["table_land_deal"],
             "ir_snapshot": {"query_type": "aggregation"},
@@ -167,6 +173,9 @@ async def test_revise_action_advances_to_draft_generation_and_keeps_revision_req
     assert result["session"]["state_json"]["draft_confirmation_required"] is True
     assert result["session"]["state_json"]["draft_confirmation_approved"] is False
     assert result["session"]["state_json"]["ir_snapshot"] is None
+    assert result["resume_directive"]["should_resume"] is True
+    assert result["resume_directive"]["text"] == "查询土地成交情况"
+    assert result["resume_directive"]["progress_text"] == "正在根据修改意见重算确认稿..."
 
 
 @pytest.mark.asyncio
@@ -181,6 +190,7 @@ async def test_confirm_from_draft_confirmation_marks_draft_as_approved():
         current_node="draft_confirmation",
         state_json={
             "draft_version": 3,
+            "question_text": "查询土地成交均价",
             "pending_actions": ["confirm", "revise", "change_table", "request_explanation", "exit_current"],
             "selected_table_ids": ["table_land_deal"],
             "ir_snapshot": {"query_type": "aggregation"},
@@ -203,6 +213,48 @@ async def test_confirm_from_draft_confirmation_marks_draft_as_approved():
     assert result["session"]["current_node"] == "draft_generation"
     assert result["session"]["state_json"]["draft_confirmation_approved"] is True
     assert result["session"]["state_json"]["selected_table_ids"] == ["table_land_deal"]
+    assert result["resume_directive"]["should_resume"] is True
+    assert result["resume_directive"]["text"] == "查询土地成交均价"
+    assert result["resume_directive"]["ir"] == {"query_type": "aggregation"}
+    assert result["resume_directive"]["progress_text"] == "正在基于已确认草稿继续查询..."
+
+
+@pytest.mark.asyncio
+async def test_execution_approve_returns_resume_directive():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="awaiting_user_action",
+        current_node="execution_guard",
+        state_json={
+            "draft_version": 4,
+            "question_text": "查询土地成交总价",
+            "pending_actions": ["execution_decision", "revise", "change_table", "request_explanation", "exit_current"],
+            "selected_table_ids": ["table_land_deal"],
+            "ir_snapshot": {"query_type": "aggregation"},
+        },
+    )
+
+    service = DraftActionService(db)
+    result = await service.apply_action(
+        query_id=query_id,
+        action_type="execution_decision",
+        payload={"decision": "approve"},
+        natural_language_reply=None,
+        draft_version=4,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="execution-approve-1",
+    )
+
+    assert result["session"]["current_node"] == "execution_approved"
+    assert result["resume_directive"]["should_resume"] is True
+    assert result["resume_directive"]["force_execute"] is True
+    assert result["resume_directive"]["ir"] == {"query_type": "aggregation"}
+    assert result["resume_directive"]["progress_text"] == "正在继续执行查询..."
 
 
 @pytest.mark.asyncio

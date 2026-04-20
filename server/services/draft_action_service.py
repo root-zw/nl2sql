@@ -154,6 +154,64 @@ class DraftActionService:
             raise ValueError(f"当前节点 {current_node} 不允许动作 {action_type}")
 
     @staticmethod
+    def _build_resume_directive(
+        *,
+        updated_session: Optional[Dict[str, Any]],
+        action_type: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not updated_session:
+            return None
+
+        current_node = updated_session.get("current_node")
+        state = dict(updated_session.get("state_json") or {})
+        text = state.get("resolved_question_text") or state.get("question_text")
+        selected_table_ids = list(state.get("selected_table_ids") or [])
+        multi_table_mode = (
+            state.get("multi_table_mode")
+            or QuerySessionService._normalize_state(state.get("candidate_snapshot")).get("multi_table_mode")
+        )
+
+        if current_node == "draft_generation" and action_type in {"confirm", "revise"}:
+            progress_text = "正在根据修改意见重算确认稿..."
+            resume_ir = None
+            if action_type == "confirm":
+                if state.get("draft_confirmation_approved") and state.get("ir_snapshot"):
+                    progress_text = "正在基于已确认草稿继续查询..."
+                    resume_ir = state.get("ir_snapshot")
+                else:
+                    progress_text = "正在使用确认后的表继续查询..."
+            return {
+                "should_resume": True,
+                "source_action": action_type,
+                "target_node": current_node,
+                "query_id": updated_session.get("query_id"),
+                "text": text,
+                "ir": resume_ir,
+                "selected_table_ids": selected_table_ids,
+                "multi_table_mode": multi_table_mode,
+                "force_execute": False,
+                "progress_text": progress_text,
+            }
+
+        if current_node == "execution_approved" and action_type == "execution_decision":
+            if state.get("execution_decision") != "approve":
+                return None
+            return {
+                "should_resume": True,
+                "source_action": action_type,
+                "target_node": current_node,
+                "query_id": updated_session.get("query_id"),
+                "text": text,
+                "ir": state.get("ir_snapshot"),
+                "selected_table_ids": selected_table_ids,
+                "multi_table_mode": multi_table_mode,
+                "force_execute": True,
+                "progress_text": "正在继续执行查询...",
+            }
+
+        return None
+
+    @staticmethod
     def _derive_session_transition(
         *,
         session: Dict[str, Any],
@@ -428,10 +486,15 @@ class DraftActionService:
                     idempotency_key,
                 )
                 if existing:
+                    replay_action = self._row_to_dict(existing)
                     return {
                         "resolution": "resolved_to_action",
-                        "action": self._row_to_dict(existing),
+                        "action": replay_action,
                         "session": session,
+                        "resume_directive": self._build_resume_directive(
+                            updated_session=session,
+                            action_type=replay_action["action_type"],
+                        ),
                         "idempotent_replay": True,
                     }
 
@@ -492,10 +555,15 @@ class DraftActionService:
             current_node=current_node,
             next_node=next_node,
         )
+        resume_directive = self._build_resume_directive(
+            updated_session=updated_session,
+            action_type=resolved_action,
+        )
         return {
             "resolution": "resolved_to_action",
             "action": self._row_to_dict(row),
             "session": updated_session,
+            "resume_directive": resume_directive,
             "idempotent_replay": False,
             "interruption": interruption,
         }

@@ -53,6 +53,7 @@ def test_submit_query_session_action_route(monkeypatch):
         return {
             "resolution": "resolved_to_action",
             "action": {"action_type": "confirm"},
+            "resume_directive": {"should_resume": True, "query_id": str(query_id)},
             "session": {"status": "running", "current_node": "draft_generation"},
         }
 
@@ -74,3 +75,4 @@ def test_submit_query_session_action_route(monkeypatch):
     payload = response.json()
     assert payload["resolution"] == "resolved_to_action"
     assert payload["session"]["current_node"] == "draft_generation"
+    assert payload["resume_directive"]["should_resume"] is True
