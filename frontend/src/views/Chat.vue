@@ -1097,6 +1097,10 @@ const pendingSessionState = computed(() => {
   return pendingSessionSnapshot.value?.state || {}
 })
 
+const pendingConfirmationView = computed(() => {
+  return pendingSessionSnapshot.value?.confirmation_view || null
+})
+
 const pendingSessionNode = computed(() => {
   return pendingSessionSnapshot.value?.current_node || ''
 })
@@ -1123,13 +1127,19 @@ const pendingSessionIcon = computed(() => {
 })
 
 const pendingSessionSummaryText = computed(() => {
+  const safeSummary = pendingConfirmationView.value?.context?.safe_summary || {}
   if (pendingSessionNode.value === 'table_resolution') {
-    if (pendingSessionState.value.manual_table_override) {
+    if (pendingTableSelection.value?.manual_table_override || pendingSessionState.value.manual_table_override) {
       return '已切换为手动选表，请重新确认要查询的数据表。'
     }
-    return pendingTableSelection.value?.message ||
+    const goalSummary = safeSummary.user_goal_summary && safeSummary.user_goal_summary !== pendingQueryText.value
+      ? `当前理解：${safeSummary.user_goal_summary}`
+      : ''
+    const reasonText = pendingTableSelection.value?.message ||
       pendingTableSelection.value?.confirmation_reason ||
+      safeSummary.open_points?.[0] ||
       '系统识别到多个候选表，需要您确认后再继续生成 IR。'
+    return [goalSummary, reasonText].filter(Boolean).join('\n\n')
   }
   if (pendingSessionNode.value === 'execution_guard') {
     return pendingConfirm.value?.natural_language || '该查询可能扫描较大数据量，请确认是否继续执行。'
@@ -1232,7 +1242,12 @@ function consumeQueryConfirmationMode() {
 
 function normalizeSessionSnapshot(payload) {
   if (!payload) return null
-  if (payload.state) return payload
+  if (payload.state) {
+    return {
+      ...payload,
+      confirmation_view: payload.confirmation_view || payload.session?.confirmation_view || null
+    }
+  }
 
   const state = payload.state_json || {}
   return {
@@ -1240,6 +1255,7 @@ function normalizeSessionSnapshot(payload) {
     status: payload.status,
     current_node: payload.current_node,
     pending_actions: state.pending_actions || [],
+    confirmation_view: payload.confirmation_view || payload.session?.confirmation_view || null,
     state,
     session: payload.session || payload
   }
@@ -1295,6 +1311,81 @@ function getDefaultSelectedTableIds(card, state = {}, options = {}) {
   return candidates[0] ? [candidates[0].table_id] : []
 }
 
+function getSnapshotSelectedTableIds(snapshot = pendingSessionSnapshot.value) {
+  const normalized = normalizeSessionSnapshot(snapshot)
+  if (!normalized) return []
+
+  const confirmationView = normalized.confirmation_view || {}
+  const selectedFromMeta = confirmationView.dependency_meta?.selected_table_ids
+  if (Array.isArray(selectedFromMeta) && selectedFromMeta.length > 0) {
+    return selectedFromMeta
+  }
+
+  const selectedFromTable = confirmationView.table_resolution?.selected_table_ids
+  if (Array.isArray(selectedFromTable) && selectedFromTable.length > 0) {
+    return selectedFromTable
+  }
+
+  return normalized.state?.selected_table_ids || []
+}
+
+function isManualTableOverride(snapshot = pendingSessionSnapshot.value) {
+  const normalized = normalizeSessionSnapshot(snapshot)
+  if (!normalized) return false
+
+  const fromView = normalized.confirmation_view?.table_resolution?.manual_table_override
+  if (fromView !== undefined && fromView !== null) {
+    return Boolean(fromView)
+  }
+  return Boolean(normalized.state?.manual_table_override)
+}
+
+function buildPendingTableSelectionCard(snapshot, fallbackCard = null) {
+  const normalized = normalizeSessionSnapshot(snapshot)
+  if (!normalized) return fallbackCard
+
+  const rawCard = normalized.state?.candidate_snapshot || fallbackCard || null
+  const tableResolution = normalized.confirmation_view?.table_resolution || null
+  if (!rawCard && !tableResolution) return null
+
+  return {
+    ...(rawCard || {}),
+    question: tableResolution?.question || rawCard?.question || normalized.state?.question_text || '',
+    message: tableResolution?.message || rawCard?.message || '',
+    confirmation_reason: tableResolution?.reason_summary || rawCard?.confirmation_reason || '',
+    candidates: tableResolution?.candidates || rawCard?.candidates || [],
+    recommended_table_ids: tableResolution?.recommended_table_ids || rawCard?.recommended_table_ids || normalized.state?.recommended_table_ids || [],
+    selected_table_ids: tableResolution?.selected_table_ids || rawCard?.selected_table_ids || getSnapshotSelectedTableIds(normalized),
+    rejected_table_ids: tableResolution?.rejected_table_ids || rawCard?.rejected_table_ids || normalized.state?.rejected_table_ids || [],
+    allow_multi_select: tableResolution?.allow_multi_select ?? rawCard?.allow_multi_select ?? false,
+    multi_table_mode: tableResolution?.multi_table_mode || rawCard?.multi_table_mode || normalized.state?.multi_table_mode || null,
+    manual_table_override: isManualTableOverride(normalized)
+  }
+}
+
+function buildPendingConfirmCard(snapshot, currentNode, fallbackCard = null) {
+  const normalized = normalizeSessionSnapshot(snapshot)
+  if (!normalized) return fallbackCard
+
+  const rawCard = currentNode === 'execution_guard'
+    ? (normalized.state?.execution_guard || fallbackCard || null)
+    : (normalized.state?.draft_confirmation_card || fallbackCard || null)
+  const viewCard = currentNode === 'execution_guard'
+    ? normalized.confirmation_view?.execution_guard
+    : normalized.confirmation_view?.draft
+
+  if (!rawCard && !viewCard) return null
+
+  return {
+    ...(rawCard || {}),
+    natural_language: viewCard?.natural_language || rawCard?.natural_language || '',
+    warnings: viewCard?.warnings || rawCard?.warnings || [],
+    suggestions: viewCard?.suggestions || rawCard?.suggestions || [],
+    estimated_cost: viewCard?.estimated_cost || rawCard?.estimated_cost || null,
+    ir: viewCard?.draft_json || viewCard?.ir || rawCard?.ir || null
+  }
+}
+
 function applyPendingSessionSnapshot(payload, options = {}) {
   const snapshot = normalizeSessionSnapshot(payload)
   if (!snapshot) {
@@ -1303,11 +1394,13 @@ function applyPendingSessionSnapshot(payload, options = {}) {
   }
 
   pendingSessionSnapshot.value = snapshot
-  pendingQueryText.value = snapshot.state?.question_text || pendingQueryText.value
+  pendingQueryText.value = snapshot.confirmation_view?.context?.question_text ||
+    snapshot.state?.question_text ||
+    pendingQueryText.value
   originalQueryId.value = snapshot.query_id || originalQueryId.value
 
   if (snapshot.current_node === 'table_resolution') {
-    const card = snapshot.state?.candidate_snapshot || options.fallbackTableSelection || null
+    const card = buildPendingTableSelectionCard(snapshot, options.fallbackTableSelection)
     pendingTableSelection.value = card
     pendingConfirm.value = null
     const nextSelectedTableIds = getDefaultSelectedTableIds(card, snapshot.state || {}, options)
@@ -1317,15 +1410,15 @@ function applyPendingSessionSnapshot(payload, options = {}) {
       tableBatchIndex.value = 0
     }
   } else if (snapshot.current_node === 'execution_guard') {
-    pendingConfirm.value = snapshot.state?.execution_guard || options.fallbackConfirmation || null
+    pendingConfirm.value = buildPendingConfirmCard(snapshot, 'execution_guard', options.fallbackConfirmation)
     pendingTableSelection.value = null
-    const stateSelected = snapshot.state?.selected_table_ids || []
+    const stateSelected = getSnapshotSelectedTableIds(snapshot)
     selectedTableIds.value = stateSelected
     selectedTableId.value = stateSelected[0] || null
     resetPendingTableUi()
   } else if (snapshot.current_node === 'draft_confirmation') {
-    pendingConfirm.value = snapshot.state?.draft_confirmation_card || options.fallbackConfirmation || null
-    pendingTableSelection.value = snapshot.state?.candidate_snapshot || options.fallbackTableSelection || null
+    pendingConfirm.value = buildPendingConfirmCard(snapshot, 'draft_confirmation', options.fallbackConfirmation)
+    pendingTableSelection.value = buildPendingTableSelectionCard(snapshot, options.fallbackTableSelection)
     const nextSelectedTableIds = getDefaultSelectedTableIds(pendingTableSelection.value, snapshot.state || {}, options)
     selectedTableIds.value = nextSelectedTableIds
     selectedTableId.value = nextSelectedTableIds[0] || null
@@ -1356,7 +1449,7 @@ async function loadQuerySessionSnapshot(
       preserveSelection
     })
 
-    if (snapshot?.current_node === 'table_resolution' && snapshot.state?.manual_table_override) {
+    if (snapshot?.current_node === 'table_resolution' && isManualTableOverride(snapshot)) {
       await expandAllTables()
     }
     return snapshot
