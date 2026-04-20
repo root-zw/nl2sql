@@ -73,9 +73,127 @@ class QuerySessionService:
         return merged
 
     @staticmethod
+    def _normalize_confirmation_state(payload: Optional[Any]) -> Dict[str, Any]:
+        if payload is None:
+            return {}
+        if hasattr(payload, "model_dump"):
+            payload = payload.model_dump()
+        return QuerySessionService._normalize_state(payload)
+
+    @staticmethod
+    def build_table_resolution_state(
+        payload: Optional[Any] = None,
+        *,
+        question_text: Optional[str] = None,
+        recommended_table_ids: Optional[list[str]] = None,
+        selected_table_ids: Optional[list[str]] = None,
+        rejected_table_ids: Optional[list[str]] = None,
+        multi_table_mode: Optional[str] = None,
+        manual_table_override: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        table_state = QuerySessionService._normalize_confirmation_state(payload)
+        return sanitize_for_json(
+            {
+                "question": table_state.get("question") or question_text,
+                "message": table_state.get("message"),
+                "reason_summary": table_state.get("reason_summary") or table_state.get("confirmation_reason"),
+                "candidates": list(table_state.get("candidates") or []),
+                "recommended_table_ids": list(
+                    recommended_table_ids
+                    if recommended_table_ids is not None
+                    else table_state.get("recommended_table_ids") or []
+                ),
+                "selected_table_ids": list(
+                    selected_table_ids
+                    if selected_table_ids is not None
+                    else table_state.get("selected_table_ids") or []
+                ),
+                "rejected_table_ids": list(
+                    rejected_table_ids
+                    if rejected_table_ids is not None
+                    else table_state.get("rejected_table_ids") or []
+                ),
+                "allow_multi_select": bool(table_state.get("allow_multi_select")),
+                "multi_table_mode": multi_table_mode or table_state.get("multi_table_mode"),
+                "manual_table_override": (
+                    bool(manual_table_override)
+                    if manual_table_override is not None
+                    else bool(table_state.get("manual_table_override"))
+                ),
+            }
+        )
+
+    @staticmethod
+    def build_draft_state(
+        payload: Optional[Any] = None,
+        *,
+        status: Optional[str] = None,
+        natural_language: Optional[str] = None,
+        draft_json: Optional[Dict[str, Any]] = None,
+        warnings: Optional[list[Any]] = None,
+        suggestions: Optional[list[Any]] = None,
+        confirmed: Optional[bool] = None,
+        confirmation_required: Optional[bool] = None,
+        table_dependent: Optional[bool] = None,
+        invalidate_on_table_change: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        draft_state = QuerySessionService._normalize_confirmation_state(payload)
+        resolved_table_dependent = True if table_dependent is None else bool(table_dependent)
+        if table_dependent is None and draft_state.get("table_dependent") is not None:
+            resolved_table_dependent = bool(draft_state.get("table_dependent"))
+
+        resolved_invalidate_on_table_change = (
+            True if invalidate_on_table_change is None else bool(invalidate_on_table_change)
+        )
+        if invalidate_on_table_change is None and draft_state.get("invalidate_on_table_change") is not None:
+            resolved_invalidate_on_table_change = bool(draft_state.get("invalidate_on_table_change"))
+
+        return sanitize_for_json(
+            {
+                "status": status or draft_state.get("status"),
+                "natural_language": natural_language or draft_state.get("natural_language"),
+                "draft_json": draft_json if draft_json is not None else draft_state.get("draft_json") or draft_state.get("ir"),
+                "warnings": list(warnings if warnings is not None else draft_state.get("warnings") or []),
+                "suggestions": list(suggestions if suggestions is not None else draft_state.get("suggestions") or []),
+                "confirmed": bool(confirmed) if confirmed is not None else bool(draft_state.get("confirmed")),
+                "confirmation_required": (
+                    bool(confirmation_required)
+                    if confirmation_required is not None
+                    else bool(draft_state.get("confirmation_required"))
+                ),
+                "table_dependent": resolved_table_dependent,
+                "invalidate_on_table_change": resolved_invalidate_on_table_change,
+            }
+        )
+
+    @staticmethod
+    def build_execution_guard_state(
+        payload: Optional[Any] = None,
+        *,
+        status: Optional[str] = None,
+        natural_language: Optional[str] = None,
+        warnings: Optional[list[Any]] = None,
+        estimated_cost: Optional[Dict[str, Any]] = None,
+        ir: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        guard_state = QuerySessionService._normalize_confirmation_state(payload)
+        return sanitize_for_json(
+            {
+                "status": status or guard_state.get("status"),
+                "natural_language": natural_language or guard_state.get("natural_language"),
+                "warnings": list(warnings if warnings is not None else guard_state.get("warnings") or []),
+                "estimated_cost": estimated_cost if estimated_cost is not None else guard_state.get("estimated_cost"),
+                "ir": ir if ir is not None else guard_state.get("ir"),
+            }
+        )
+
+    @staticmethod
     def _get_selected_table_ids(state: Dict[str, Any]) -> list[str]:
-        selected_table_ids = list(state.get("selected_table_ids") or [])
+        table_resolution_state = QuerySessionService._normalize_confirmation_state(state.get("table_resolution_state"))
+        selected_table_ids = list(state.get("selected_table_ids") or table_resolution_state.get("selected_table_ids") or [])
         selected_table_id = state.get("selected_table_id")
+        if not selected_table_id and table_resolution_state.get("selected_table_ids"):
+            selected_table_id = list(table_resolution_state.get("selected_table_ids") or [None])[0]
         if not selected_table_ids and selected_table_id:
             selected_table_ids = [selected_table_id]
         return selected_table_ids
@@ -118,17 +236,19 @@ class QuerySessionService:
 
     @staticmethod
     def _build_table_resolution(current_node: Optional[str], state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        table_resolution_state = QuerySessionService._normalize_confirmation_state(state.get("table_resolution_state"))
         candidate_snapshot = QuerySessionService._normalize_state(state.get("candidate_snapshot"))
         selected_table_ids = QuerySessionService._get_selected_table_ids(state)
         recommended_table_ids = list(
             state.get("recommended_table_ids")
+            or table_resolution_state.get("recommended_table_ids")
             or candidate_snapshot.get("recommended_table_ids")
             or []
         )
-        rejected_table_ids = list(state.get("rejected_table_ids") or [])
-        candidates = list(candidate_snapshot.get("candidates") or [])
+        rejected_table_ids = list(state.get("rejected_table_ids") or table_resolution_state.get("rejected_table_ids") or [])
+        candidates = list(table_resolution_state.get("candidates") or candidate_snapshot.get("candidates") or [])
 
-        if not any([candidate_snapshot, selected_table_ids, recommended_table_ids, rejected_table_ids]):
+        if not any([table_resolution_state, candidate_snapshot, selected_table_ids, recommended_table_ids, rejected_table_ids]):
             return None
 
         status = "idle"
@@ -139,28 +259,45 @@ class QuerySessionService:
 
         return {
             "status": status,
-            "question": candidate_snapshot.get("question") or state.get("question_text"),
-            "message": candidate_snapshot.get("message"),
-            "reason_summary": candidate_snapshot.get("confirmation_reason"),
+            "question": table_resolution_state.get("question") or candidate_snapshot.get("question") or state.get("question_text"),
+            "message": table_resolution_state.get("message") or candidate_snapshot.get("message"),
+            "reason_summary": table_resolution_state.get("reason_summary") or candidate_snapshot.get("confirmation_reason"),
             "candidates": candidates,
             "recommended_table_ids": recommended_table_ids,
             "selected_table_ids": selected_table_ids,
             "rejected_table_ids": rejected_table_ids,
-            "allow_multi_select": bool(candidate_snapshot.get("allow_multi_select")),
-            "multi_table_mode": state.get("multi_table_mode") or candidate_snapshot.get("multi_table_mode"),
-            "manual_table_override": bool(state.get("manual_table_override")),
+            "allow_multi_select": bool(
+                table_resolution_state.get("allow_multi_select")
+                if table_resolution_state.get("allow_multi_select") is not None
+                else candidate_snapshot.get("allow_multi_select")
+            ),
+            "multi_table_mode": (
+                state.get("multi_table_mode")
+                or table_resolution_state.get("multi_table_mode")
+                or candidate_snapshot.get("multi_table_mode")
+            ),
+            "manual_table_override": bool(
+                state.get("manual_table_override")
+                if state.get("manual_table_override") is not None
+                else table_resolution_state.get("manual_table_override")
+            ),
         }
 
     @staticmethod
     def _build_draft(current_node: Optional[str], state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         provisional_draft = QuerySessionService._normalize_state(state.get("provisional_draft"))
         confirmed_draft = QuerySessionService._normalize_state(state.get("confirmed_draft"))
+        draft_state = QuerySessionService._normalize_confirmation_state(state.get("draft_state"))
         draft_confirmation_card = QuerySessionService._normalize_state(state.get("draft_confirmation_card"))
         ir_snapshot = QuerySessionService._normalize_state(state.get("ir_snapshot"))
 
-        if not any([provisional_draft, confirmed_draft, draft_confirmation_card, ir_snapshot]):
+        if not any([provisional_draft, confirmed_draft, draft_state, draft_confirmation_card, ir_snapshot]):
             return None
 
+        derived_draft_state = draft_state or QuerySessionService.build_draft_state(
+            draft_confirmation_card,
+            draft_json=draft_confirmation_card.get("ir") or ir_snapshot or None,
+        )
         if provisional_draft:
             status = provisional_draft.get("status") or "provisional"
             natural_language = provisional_draft.get("natural_language")
@@ -179,31 +316,49 @@ class QuerySessionService:
             elif state.get("draft_confirmation_approved"):
                 status = "confirmed"
             else:
-                status = "available"
-            natural_language = draft_confirmation_card.get("natural_language")
-            draft_json = draft_confirmation_card.get("ir") or ir_snapshot or None
-            warnings = list(draft_confirmation_card.get("warnings") or [])
-            suggestions = list(draft_confirmation_card.get("suggestions") or [])
+                status = derived_draft_state.get("status") or "available"
+            natural_language = derived_draft_state.get("natural_language")
+            draft_json = derived_draft_state.get("draft_json") or derived_draft_state.get("ir") or ir_snapshot or None
+            warnings = list(derived_draft_state.get("warnings") or [])
+            suggestions = list(derived_draft_state.get("suggestions") or [])
+
+        confirmed = state.get("draft_confirmation_approved")
+        if confirmed is None:
+            confirmed = derived_draft_state.get("confirmed")
+
+        confirmation_required = state.get("draft_confirmation_required")
+        if confirmation_required is None:
+            confirmation_required = derived_draft_state.get("confirmation_required")
+
+        table_dependent = derived_draft_state.get("table_dependent")
+        if table_dependent is None:
+            table_dependent = True
+
+        invalidate_on_table_change = derived_draft_state.get("invalidate_on_table_change")
+        if invalidate_on_table_change is None:
+            invalidate_on_table_change = True
 
         return {
             "status": status,
-            "table_dependent": True,
-            "invalidate_on_table_change": True,
+            "table_dependent": bool(table_dependent),
+            "invalidate_on_table_change": bool(invalidate_on_table_change),
             "natural_language": natural_language,
             "draft_json": draft_json,
             "warnings": warnings,
             "suggestions": suggestions,
-            "confirmed": bool(state.get("draft_confirmation_approved")),
-            "confirmation_required": bool(state.get("draft_confirmation_required")),
+            "confirmed": bool(confirmed),
+            "confirmation_required": bool(confirmation_required),
         }
 
     @staticmethod
     def _build_execution_guard(current_node: Optional[str], state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        execution_guard_state = QuerySessionService._normalize_confirmation_state(state.get("execution_guard_state"))
         execution_guard = QuerySessionService._normalize_state(state.get("execution_guard"))
-        if not execution_guard and current_node != "execution_guard":
+        derived_execution_guard = execution_guard_state or QuerySessionService.build_execution_guard_state(execution_guard)
+        if not derived_execution_guard and current_node != "execution_guard":
             return None
 
-        status = "available"
+        status = derived_execution_guard.get("status") or "available"
         if current_node == "execution_guard":
             status = "awaiting_confirmation"
         elif state.get("execution_decision") == "approve":
@@ -211,10 +366,10 @@ class QuerySessionService:
 
         return {
             "status": status,
-            "natural_language": execution_guard.get("natural_language"),
-            "warnings": list(execution_guard.get("warnings") or []),
-            "estimated_cost": execution_guard.get("estimated_cost"),
-            "ir": execution_guard.get("ir") or state.get("ir_snapshot"),
+            "natural_language": derived_execution_guard.get("natural_language"),
+            "warnings": list(derived_execution_guard.get("warnings") or []),
+            "estimated_cost": derived_execution_guard.get("estimated_cost"),
+            "ir": derived_execution_guard.get("ir") or state.get("ir_snapshot"),
         }
 
     @staticmethod

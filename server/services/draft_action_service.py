@@ -270,8 +270,10 @@ class DraftActionService:
         state = dict(updated_session.get("state_json") or {})
         text = state.get("resolved_question_text") or state.get("question_text")
         selected_table_ids = list(state.get("selected_table_ids") or [])
+        table_resolution_state = QuerySessionService._normalize_state(state.get("table_resolution_state"))
         multi_table_mode = (
             state.get("multi_table_mode")
+            or table_resolution_state.get("multi_table_mode")
             or QuerySessionService._normalize_state(state.get("candidate_snapshot")).get("multi_table_mode")
         )
 
@@ -352,6 +354,7 @@ class DraftActionService:
                     "invalidated_artifacts": [],
                     "draft_confirmation_required": True,
                     "draft_confirmation_approved": False,
+                    "draft_state": None,
                     "draft_confirmation_card": None,
                     "manual_table_override": False,
                     "interruption_requested": False,
@@ -378,7 +381,9 @@ class DraftActionService:
                     "ir_snapshot": None,
                     "sql_preview": None,
                     "result_meta": None,
+                    "execution_guard_state": None,
                     "execution_guard": None,
+                    "draft_state": None,
                     "draft_confirmation_card": None,
                     "draft_confirmation_required": False,
                     "draft_confirmation_approved": False,
@@ -409,7 +414,9 @@ class DraftActionService:
                     "ir_snapshot": None,
                     "sql_preview": None,
                     "result_meta": None,
+                    "execution_guard_state": None,
                     "execution_guard": None,
+                    "draft_state": None,
                     "draft_confirmation_card": None,
                     "draft_confirmation_required": True,
                     "draft_confirmation_approved": False,
@@ -441,6 +448,7 @@ class DraftActionService:
                         "pending_actions": [],
                         "last_action": "execution_decision",
                         "execution_decision": "approve",
+                        "execution_guard_state": None,
                         "execution_guard": None,
                         "draft_confirmation_required": False,
                         "interruption_requested": False,

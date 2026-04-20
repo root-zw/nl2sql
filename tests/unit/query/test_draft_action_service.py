@@ -141,6 +141,10 @@ async def test_confirm_action_advances_table_resolution_to_draft_generation():
             "question_text": "查询土地成交情况",
             "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
             "recommended_table_ids": ["table_land_deal"],
+            "table_resolution_state": {
+                "recommended_table_ids": ["table_land_deal"],
+                "multi_table_mode": "union",
+            },
         },
     )
 
@@ -163,9 +167,11 @@ async def test_confirm_action_advances_table_resolution_to_draft_generation():
     assert result["session"]["state_json"]["selected_table_ids"] == ["table_land_deal"]
     assert result["session"]["state_json"]["draft_confirmation_required"] is True
     assert result["session"]["state_json"]["draft_confirmation_approved"] is False
+    assert result["session"]["state_json"]["draft_state"] is None
     assert result["resume_directive"]["should_resume"] is True
     assert result["resume_directive"]["text"] == "查询土地成交情况"
     assert result["resume_directive"]["ir"] is None
+    assert result["resume_directive"]["multi_table_mode"] == "union"
     assert result["resume_directive"]["progress_text"] == "正在使用确认后的表继续查询..."
     assert len(db.learning_events) == 1
     learning_event = next(iter(db.learning_events.values()))
@@ -191,6 +197,14 @@ async def test_revise_action_advances_to_draft_generation_and_keeps_revision_req
             "pending_actions": ["execution_decision", "revise", "change_table", "request_explanation", "exit_current"],
             "selected_table_ids": ["table_land_deal"],
             "ir_snapshot": {"query_type": "aggregation"},
+            "draft_state": {
+                "natural_language": "查询土地成交情况",
+                "draft_json": {"query_type": "aggregation"},
+            },
+            "execution_guard_state": {
+                "natural_language": "此查询将扫描约 100 万行数据",
+                "ir": {"query_type": "aggregation"},
+            },
         },
     )
 
@@ -213,6 +227,8 @@ async def test_revise_action_advances_to_draft_generation_and_keeps_revision_req
     assert result["session"]["state_json"]["draft_confirmation_required"] is True
     assert result["session"]["state_json"]["draft_confirmation_approved"] is False
     assert result["session"]["state_json"]["ir_snapshot"] is None
+    assert result["session"]["state_json"]["draft_state"] is None
+    assert result["session"]["state_json"]["execution_guard_state"] is None
     assert result["resume_directive"]["should_resume"] is True
     assert result["resume_directive"]["text"] == "查询土地成交情况"
     assert result["resume_directive"]["progress_text"] == "正在根据修改意见重算确认稿..."
@@ -275,6 +291,10 @@ async def test_execution_approve_returns_resume_directive():
             "pending_actions": ["execution_decision", "revise", "change_table", "request_explanation", "exit_current"],
             "selected_table_ids": ["table_land_deal"],
             "ir_snapshot": {"query_type": "aggregation"},
+            "execution_guard_state": {
+                "natural_language": "此查询将扫描约 100 万行数据",
+                "ir": {"query_type": "aggregation"},
+            },
         },
     )
 
@@ -291,6 +311,7 @@ async def test_execution_approve_returns_resume_directive():
     )
 
     assert result["session"]["current_node"] == "execution_approved"
+    assert result["session"]["state_json"]["execution_guard_state"] is None
     assert result["resume_directive"]["should_resume"] is True
     assert result["resume_directive"]["force_execute"] is True
     assert result["resume_directive"]["ir"] == {"query_type": "aggregation"}
@@ -381,6 +402,14 @@ async def test_natural_language_change_table_invalidates_ir_artifacts():
             "draft_version": 2,
             "pending_actions": ["change_table", "revise", "request_explanation", "exit_current"],
             "selected_table_ids": ["table_land_deal"],
+            "draft_state": {
+                "natural_language": "查询土地成交情况",
+                "draft_json": {"query_type": "aggregation"},
+            },
+            "execution_guard_state": {
+                "natural_language": "此查询将扫描约 100 万行数据",
+                "ir": {"query_type": "aggregation"},
+            },
         },
     )
 
@@ -402,6 +431,8 @@ async def test_natural_language_change_table_invalidates_ir_artifacts():
     assert result["session"]["state_json"]["ir_ready"] is False
     assert result["session"]["state_json"]["ir_snapshot"] is None
     assert result["session"]["state_json"]["sql_preview"] is None
+    assert result["session"]["state_json"]["draft_state"] is None
+    assert result["session"]["state_json"]["execution_guard_state"] is None
     assert "table_land_deal" in result["session"]["state_json"]["rejected_table_ids"]
     assert result["interruption"]["requested"] is False
     learning_event = next(iter(db.learning_events.values()))

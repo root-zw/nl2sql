@@ -964,7 +964,11 @@ async def query(
                             current_node="table_resolution",
                             state_updates={
                                 "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
-                                "candidate_snapshot": pending_card.model_dump() if pending_card else {},
+                                "table_resolution_state": QuerySessionService.build_table_resolution_state(
+                                    pending_card,
+                                    question_text=effective_question_text,
+                                    selected_table_ids=selected_table_ids,
+                                ),
                                 "recommended_table_ids": list(getattr(pending_card, "recommended_table_ids", []) or []),
                                 "selected_table_ids": selected_table_ids,
                             },
@@ -1044,7 +1048,11 @@ async def query(
                         current_node="table_resolution",
                         state_updates={
                             "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
-                            "candidate_snapshot": pending_card.model_dump() if pending_card else {},
+                            "table_resolution_state": QuerySessionService.build_table_resolution_state(
+                                pending_card,
+                                question_text=effective_question_text,
+                                selected_table_ids=selected_table_ids,
+                            ),
                             "recommended_table_ids": list(getattr(pending_card, "recommended_table_ids", []) or []),
                             "selected_table_ids": selected_table_ids,
                         },
@@ -1147,7 +1155,11 @@ async def query(
                 current_node="table_resolution",
                 state_updates={
                     "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
-                    "candidate_snapshot": pending_card.model_dump() if pending_card else {},
+                    "table_resolution_state": QuerySessionService.build_table_resolution_state(
+                        pending_card,
+                        question_text=effective_question_text,
+                        selected_table_ids=selected_table_ids,
+                    ),
                     "recommended_table_ids": list(getattr(pending_card, "recommended_table_ids", []) or []),
                     "selected_table_ids": selected_table_ids,
                 },
@@ -1210,9 +1222,14 @@ async def query(
         "cross_partition_mode": cross_partition_mode,
         "is_cross_partition_query": is_cross_partition_query,
         "recommended_table_ids": selected_table_ids,
+        "table_resolution_state": QuerySessionService.build_table_resolution_state(
+            candidate_snapshot,
+            question_text=effective_question_text,
+            recommended_table_ids=selected_table_ids,
+            selected_table_ids=selected_table_ids,
+            multi_table_mode=cross_partition_mode,
+        ),
     }
-    if candidate_snapshot:
-        table_resolution_state_updates["candidate_snapshot"] = candidate_snapshot
     await _update_query_session(
         status="running",
         current_node="table_resolved",
@@ -2044,7 +2061,11 @@ async def query(
                                     current_node="table_resolution",
                                     state_updates={
                                         "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
-                                        "candidate_snapshot": fallback_card.model_dump(),
+                                        "table_resolution_state": QuerySessionService.build_table_resolution_state(
+                                            fallback_card,
+                                            question_text=effective_question_text,
+                                            selected_table_ids=selected_table_ids,
+                                        ),
                                         "recommended_table_ids": list(fallback_card.recommended_table_ids or []),
                                         "selected_table_ids": selected_table_ids,
                                     },
@@ -2091,7 +2112,11 @@ async def query(
                                     current_node="table_resolution",
                                     state_updates={
                                         "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
-                                        "candidate_snapshot": fallback_card.model_dump(),
+                                        "table_resolution_state": QuerySessionService.build_table_resolution_state(
+                                            fallback_card,
+                                            question_text=effective_question_text,
+                                            selected_table_ids=selected_table_ids,
+                                        ),
                                         "recommended_table_ids": list(fallback_card.recommended_table_ids or []),
                                         "selected_table_ids": selected_table_ids,
                                     },
@@ -2460,7 +2485,13 @@ async def query(
                 current_node="draft_confirmation",
                 state_updates={
                     "pending_actions": ["confirm", "revise", "change_table", "request_explanation", "exit_current"],
-                    "draft_confirmation_card": sanitize_for_json(confirm_card.model_dump()),
+                    "draft_state": QuerySessionService.build_draft_state(
+                        confirm_card,
+                        status="awaiting_confirmation",
+                        draft_json=sanitize_for_json(ir.model_dump()),
+                        confirmed=False,
+                        confirmation_required=False,
+                    ),
                     "ir_snapshot": sanitize_for_json(ir.model_dump()),
                     "ir_ready": True,
                     "selected_table_ids": selected_table_ids,
@@ -3015,7 +3046,11 @@ async def query(
                         current_node="execution_guard",
                         state_updates={
                             "pending_actions": ["execution_decision", "revise", "change_table", "request_explanation", "exit_current"],
-                            "execution_guard": sanitize_for_json(confirm_card.model_dump()),
+                            "execution_guard_state": QuerySessionService.build_execution_guard_state(
+                                confirm_card,
+                                status="awaiting_confirmation",
+                                ir=sanitize_for_json(ir.model_dump()),
+                            ),
                             "ir_snapshot": sanitize_for_json(ir.model_dump()),
                             "ir_ready": True,
                         },

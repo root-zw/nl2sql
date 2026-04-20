@@ -1367,21 +1367,34 @@ function buildPendingTableSelectionCard(snapshot, fallbackCard = null) {
   const normalized = normalizeSessionSnapshot(snapshot)
   if (!normalized) return fallbackCard
 
-  const rawCard = normalized.state?.candidate_snapshot || fallbackCard || null
   const tableResolution = normalized.confirmation_view?.table_resolution || null
-  if (!rawCard && !tableResolution) return null
+  if (tableResolution) {
+    return {
+      question: tableResolution.question || normalized.state?.question_text || '',
+      message: tableResolution.message || '',
+      confirmation_reason: tableResolution.reason_summary || '',
+      candidates: tableResolution.candidates || [],
+      recommended_table_ids: tableResolution.recommended_table_ids || [],
+      selected_table_ids: tableResolution.selected_table_ids || getSnapshotSelectedTableIds(normalized),
+      rejected_table_ids: tableResolution.rejected_table_ids || normalized.state?.rejected_table_ids || [],
+      allow_multi_select: tableResolution.allow_multi_select ?? false,
+      multi_table_mode: tableResolution.multi_table_mode || normalized.state?.multi_table_mode || null,
+      manual_table_override: isManualTableOverride(normalized)
+    }
+  }
+  if (!fallbackCard) return null
 
   return {
-    ...(rawCard || {}),
-    question: tableResolution?.question || rawCard?.question || normalized.state?.question_text || '',
-    message: tableResolution?.message || rawCard?.message || '',
-    confirmation_reason: tableResolution?.reason_summary || rawCard?.confirmation_reason || '',
-    candidates: tableResolution?.candidates || rawCard?.candidates || [],
-    recommended_table_ids: tableResolution?.recommended_table_ids || rawCard?.recommended_table_ids || normalized.state?.recommended_table_ids || [],
-    selected_table_ids: tableResolution?.selected_table_ids || rawCard?.selected_table_ids || getSnapshotSelectedTableIds(normalized),
-    rejected_table_ids: tableResolution?.rejected_table_ids || rawCard?.rejected_table_ids || normalized.state?.rejected_table_ids || [],
-    allow_multi_select: tableResolution?.allow_multi_select ?? rawCard?.allow_multi_select ?? false,
-    multi_table_mode: tableResolution?.multi_table_mode || rawCard?.multi_table_mode || normalized.state?.multi_table_mode || null,
+    ...fallbackCard,
+    question: fallbackCard.question || normalized.state?.question_text || '',
+    message: fallbackCard.message || '',
+    confirmation_reason: fallbackCard.confirmation_reason || '',
+    candidates: fallbackCard.candidates || [],
+    recommended_table_ids: fallbackCard.recommended_table_ids || normalized.state?.recommended_table_ids || [],
+    selected_table_ids: fallbackCard.selected_table_ids || getSnapshotSelectedTableIds(normalized),
+    rejected_table_ids: fallbackCard.rejected_table_ids || normalized.state?.rejected_table_ids || [],
+    allow_multi_select: fallbackCard.allow_multi_select ?? false,
+    multi_table_mode: fallbackCard.multi_table_mode || normalized.state?.multi_table_mode || null,
     manual_table_override: isManualTableOverride(normalized)
   }
 }
@@ -1390,22 +1403,28 @@ function buildPendingConfirmCard(snapshot, currentNode, fallbackCard = null) {
   const normalized = normalizeSessionSnapshot(snapshot)
   if (!normalized) return fallbackCard
 
-  const rawCard = currentNode === 'execution_guard'
-    ? (normalized.state?.execution_guard || fallbackCard || null)
-    : (normalized.state?.draft_confirmation_card || fallbackCard || null)
   const viewCard = currentNode === 'execution_guard'
     ? normalized.confirmation_view?.execution_guard
     : normalized.confirmation_view?.draft
 
-  if (!rawCard && !viewCard) return null
+  if (viewCard) {
+    return {
+      natural_language: viewCard.natural_language || '',
+      warnings: viewCard.warnings || [],
+      suggestions: viewCard.suggestions || [],
+      estimated_cost: viewCard.estimated_cost || null,
+      ir: viewCard.draft_json || viewCard.ir || null
+    }
+  }
+  if (!fallbackCard) return null
 
   return {
-    ...(rawCard || {}),
-    natural_language: viewCard?.natural_language || rawCard?.natural_language || '',
-    warnings: viewCard?.warnings || rawCard?.warnings || [],
-    suggestions: viewCard?.suggestions || rawCard?.suggestions || [],
-    estimated_cost: viewCard?.estimated_cost || rawCard?.estimated_cost || null,
-    ir: viewCard?.draft_json || viewCard?.ir || rawCard?.ir || null
+    ...fallbackCard,
+    natural_language: fallbackCard.natural_language || '',
+    warnings: fallbackCard.warnings || [],
+    suggestions: fallbackCard.suggestions || [],
+    estimated_cost: fallbackCard.estimated_cost || null,
+    ir: fallbackCard.ir || null
   }
 }
 
@@ -1559,11 +1578,10 @@ function buildPendingExplanation(snapshot = pendingSessionSnapshot.value) {
   const currentSnapshot = normalizeSessionSnapshot(snapshot)
   if (!currentSnapshot) return '当前没有可解释的确认步骤。'
 
-  const state = currentSnapshot.state || {}
   if (currentSnapshot.current_node === 'table_resolution') {
-    const card = state.candidate_snapshot || {}
-    const reason = card.confirmation_reason || '当前命中了多个候选表，需要先确认目标表。'
-    const candidateReasons = (card.candidates || [])
+    const tableResolution = currentSnapshot.confirmation_view?.table_resolution || null
+    const reason = tableResolution?.reason_summary || '当前命中了多个候选表，需要先确认目标表。'
+    const candidateReasons = (tableResolution?.candidates || [])
       .slice(0, 3)
       .map(candidate => `- ${candidate.table_name}: ${candidate.reason || '语义相近候选表'}`)
       .join('\n')
@@ -1576,9 +1594,9 @@ function buildPendingExplanation(snapshot = pendingSessionSnapshot.value) {
   }
 
   if (currentSnapshot.current_node === 'execution_guard') {
-    const guard = state.execution_guard || {}
-    const warnings = (guard.warnings || []).map(item => `- ${item}`).join('\n')
-    const estimatedRows = guard.estimated_cost?.rows
+    const guard = currentSnapshot.confirmation_view?.execution_guard || null
+    const warnings = (guard?.warnings || []).map(item => `- ${item}`).join('\n')
+    const estimatedRows = guard?.estimated_cost?.rows
 
     return [
       '当前处于执行确认阶段。',
@@ -1588,8 +1606,9 @@ function buildPendingExplanation(snapshot = pendingSessionSnapshot.value) {
   }
 
   if (currentSnapshot.current_node === 'draft_confirmation') {
+    const draft = currentSnapshot.confirmation_view?.draft || null
     return [
-      pendingConfirm.value?.natural_language || '',
+      draft?.natural_language || pendingConfirm.value?.natural_language || '',
       pendingRevisionNote.value ? `当前已记录修改意见：${pendingRevisionNote.value}` : ''
     ].filter(Boolean).join('\n\n') || '当前处于草稿确认阶段，请确认是否继续。'
   }
