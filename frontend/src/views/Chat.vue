@@ -1126,6 +1126,16 @@ const STREAM_PENDING_ACTION_CONTRACTS = {
       request_explanation: 'request_explanation',
       cancel_query: 'exit_current'
     }
+  },
+  execution_guard: {
+    rawPendingActions: ['execution_decision', 'revise', 'change_table', 'request_explanation', 'exit_current'],
+    actionBindings: {
+      approve_execution: 'execution_decision',
+      revise: 'revise',
+      change_table: 'change_table',
+      request_explanation: 'request_explanation',
+      cancel_query: 'exit_current'
+    }
   }
 }
 
@@ -1164,6 +1174,16 @@ function resolvePendingQueryText(preferredText = '') {
 
 function isPendingCompletedPayload(payload) {
   return ['table_selection_needed', 'confirm_needed', 'awaiting_user_action'].includes(payload?.status)
+}
+
+function resolveConfirmCurrentNode(payload) {
+  if (payload?.current_node) {
+    return payload.current_node
+  }
+  if (payload?.confirmation?.estimated_cost) {
+    return 'execution_guard'
+  }
+  return 'draft_confirmation'
 }
 
 function applyPendingStreamSnapshot({
@@ -1262,6 +1282,20 @@ function applyPendingStreamSnapshot({
       table_dependent: true,
       invalidate_on_table_change: true
     }
+    nextState.ir_snapshot = confirmation.ir || existingState.ir_snapshot || null
+  }
+
+  if (currentNode === 'execution_guard' && confirmation) {
+    const executionGuardCard = {
+      status: 'awaiting_confirmation',
+      natural_language: confirmation.natural_language || '',
+      warnings: confirmation.warnings || [],
+      estimated_cost: confirmation.estimated_cost || null,
+      ir: confirmation.ir || null
+    }
+
+    confirmationView.execution_guard = executionGuardCard
+    nextState.execution_guard_state = executionGuardCard
     nextState.ir_snapshot = confirmation.ir || existingState.ir_snapshot || null
   }
 
@@ -1722,6 +1756,9 @@ async function executeQueryViaWebSocket(text, assistantMessageId, options = {}) 
   currentQueryId.value = options.originalQueryId || null
   
   ws.onopen = () => {
+    if (typeof options.onOpen === 'function') {
+      options.onOpen()
+    }
     const payload = {
       text: text || null,
       ir: options.ir || null,
@@ -1814,24 +1851,12 @@ async function handleWebSocketMessage(data, assistantMessageId) {
       updateAssistantMessage(assistantMessageId, { status: 'running' })
       // 更新进度步骤
       updateProgressStep(payload.step, payload.status || 'running', payload.description)
-      if (payload.step === 'table_selection') {
-        const currentMsg = findMessage(assistantMessageId)
-        if (currentMsg?.query_id) {
-          void loadResultSessionSnapshot(currentMsg.query_id, { force: true })
-        }
-      }
       break
     
     case 'thinking':
       // 思考过程流式输出（类似 Deep Research 效果）
       updateThinkingStep(assistantMessageId, payload.step, payload.content, payload.done, payload.step_status)
       updateAssistantMessage(assistantMessageId, { status: 'running' })
-      if (payload.step === 'table_selection') {
-        const currentMsg = findMessage(assistantMessageId)
-        if (currentMsg?.query_id) {
-          void loadResultSessionSnapshot(currentMsg.query_id, { force: true })
-        }
-      }
       break
       
     case 'confirm':
@@ -1839,8 +1864,9 @@ async function handleWebSocketMessage(data, assistantMessageId) {
       hideAssistantPlaceholder(assistantMessageId)
       originalQueryId.value = data.query_id || payload.query_id || currentQueryId.value || originalQueryId.value || null
       pendingQueryText.value = resolvePendingQueryText(payload.query_text)
+      const confirmationNode = resolveConfirmCurrentNode(payload)
       const localConfirmSnapshot = applyPendingStreamSnapshot({
-        currentNode: 'draft_confirmation',
+        currentNode: confirmationNode,
         queryId: originalQueryId.value,
         messageId: assistantMessageId,
         queryText: pendingQueryText.value,
@@ -1877,7 +1903,7 @@ async function handleWebSocketMessage(data, assistantMessageId) {
         originalQueryId.value,
         '选表阶段状态加载失败，请重试。',
         {
-          preserveSelection: false,
+          preserveSelection: true,
           localSnapshotApplied: Boolean(localTableSelectionSnapshot)
         }
       )
@@ -2130,14 +2156,14 @@ async function continueQueryFromPendingState({
     ? createAssistantPlaceholder()
     : reuseOrCreateAssistantMessage(queryId)
   prepareAssistantPlaceholder(assistantMessageId, progressText)
-  clearPendingSessionState({ keepQueryText: true })
   await executeQueryViaWebSocket(text, assistantMessageId, {
     ir,
     selectedTableIds: continuationTableIds,
     multiTableMode,
     originalQueryId: queryId,
     forceExecute,
-    resumeAsNewTurn
+    resumeAsNewTurn,
+    onOpen: () => clearPendingSessionState({ keepQueryText: true })
   })
 }
 
@@ -2159,8 +2185,9 @@ async function continueQueryFromResumeDirective(resumeDirective = {}, { resumeAs
 async function startFreshQueryFromPendingReply(text) {
   const assistantMessageId = createAssistantPlaceholder()
   prepareAssistantPlaceholder(assistantMessageId)
-  clearPendingSessionState()
-  await executeQueryViaWebSocket(text, assistantMessageId, {})
+  await executeQueryViaWebSocket(text, assistantMessageId, {
+    onOpen: () => clearPendingSessionState()
+  })
 }
 
 async function submitPendingSessionAction({
@@ -2765,15 +2792,19 @@ function isNarrativeStreaming(msg) {
 
 // 判断是否可以显示结果详情（叙述完成后）
 function canShowResultDetails(msg) {
-  // 如果消息已完成，显示所有内容
   if (msg.status === 'completed') return true
-  return Boolean(
-    msg?.result_summary ||
-    msg?.sql_text ||
-    msg?.result_data?.columns?.length ||
-    msg?.result_data?.rows?.length ||
-    msg?.result_data?.meta?.explain_only
-  )
+  if (msg.result_data?.meta?.explain_only) return true
+
+  const narrativeStatus = msg.result_data?.meta?.narrative_status
+  if (['disabled', 'failed', 'empty'].includes(narrativeStatus)) {
+    return true
+  }
+
+  if (currentStreamingMessageId.value === msg.message_id && narrativePending.value) {
+    return false
+  }
+
+  return Boolean(msg?.result_summary)
 }
 
 async function reopenTableSelectionForMessage(msg) {

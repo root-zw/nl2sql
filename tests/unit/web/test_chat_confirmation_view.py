@@ -47,6 +47,9 @@ def test_chat_view_uses_resume_directive_to_continue_pending_query():
     assert "await continueQueryFromResumeDirective(result.resume_directive, {" in content
     assert "resumeAsNewTurn: Boolean(naturalLanguageReply)" in content
     assert "resume_as_new_turn: Boolean(options.resumeAsNewTurn)" in content
+    assert "onOpen: () => clearPendingSessionState({ keepQueryText: true })" in content
+    assert "onOpen: () => clearPendingSessionState()" in content
+    assert "if (typeof options.onOpen === 'function')" in content
 
 
 def test_chat_view_simplifies_confirmation_mode_to_two_visible_options():
@@ -268,10 +271,12 @@ def test_chat_view_shows_result_details_before_narrative_finishes():
     content = chat_view.read_text(encoding="utf-8")
 
     assert "v-else-if=\"isNarrativeStreaming(msg)\"" in content
-    assert "msg?.sql_text ||" in content
-    assert "msg?.result_data?.columns?.length ||" in content
-    assert "msg?.result_data?.rows?.length ||" in content
-    assert "msg?.result_data?.meta?.explain_only" in content
+    assert "if (msg.result_data?.meta?.explain_only) return true" in content
+    assert "if (currentStreamingMessageId.value === msg.message_id && narrativePending.value) {" in content
+    assert "return Boolean(msg?.result_summary)" in content
+    assert "msg?.sql_text ||" not in content
+    assert "msg?.result_data?.columns?.length ||" not in content
+    assert "msg?.result_data?.rows?.length ||" not in content
 
 
 def test_chat_view_uses_stream_payload_to_prime_pending_session_cards():
@@ -279,13 +284,18 @@ def test_chat_view_uses_stream_payload_to_prime_pending_session_cards():
     content = chat_view.read_text(encoding="utf-8")
 
     assert "const STREAM_PENDING_ACTION_CONTRACTS = {" in content
+    assert "execution_guard: {" in content
     assert "function resolvePendingQueryText(preferredText = '')" in content
+    assert "function resolveConfirmCurrentNode(payload)" in content
     assert "function applyPendingStreamSnapshot({" in content
     assert "function refreshPendingSessionSnapshot(" in content
+    assert "const confirmationNode = resolveConfirmCurrentNode(payload)" in content
     assert "const localConfirmSnapshot = applyPendingStreamSnapshot({" in content
     assert "const localTableSelectionSnapshot = applyPendingStreamSnapshot({" in content
     assert "pendingQueryText.value = resolvePendingQueryText(payload.query_text)" in content
     assert "preserveExistingOnError: true" in content
+    assert "payload?.current_node" in content
+    assert "preserveSelection: true,\n          localSnapshotApplied: Boolean(localTableSelectionSnapshot)" in content
 
 
 def test_chat_view_skips_completed_cleanup_while_waiting_for_user_action():

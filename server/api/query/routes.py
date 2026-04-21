@@ -1065,13 +1065,20 @@ async def query(
 
     async def _emit_pending_stream(
         stream_event: Optional[Dict[str, Any]] = None,
+        *,
+        current_node: Optional[str] = None,
     ) -> None:
         if not stream_event:
             return
         event_type = stream_event.get("type")
         payload = stream_event.get("payload")
         if event_type == "confirmation":
-            await _stream_confirmation(stream, payload)
+            await _stream_confirmation(
+                stream,
+                payload,
+                current_node=current_node,
+                query_text=effective_question_text or request.text,
+            )
             return
         if event_type == "table_selection":
             await _stream_table_selection(stream, payload, query_id)
@@ -1093,7 +1100,7 @@ async def query(
             state_updates=state_updates,
             last_error=last_error,
         )
-        await _emit_pending_stream(stream_event)
+        await _emit_pending_stream(stream_event, current_node=current_node)
         try:
             await _emit_query_outcome_event(
                 query_id=query_id,

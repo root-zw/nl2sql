@@ -104,10 +104,21 @@ class QueryStreamEmitter:
     async def emit_result(self, payload: Dict[str, Any]):
         await self.emit("result", payload)
 
-    async def emit_confirmation(self, confirmation: ConfirmationCard):
-        await self.emit("confirm", {
+    async def emit_confirmation(
+        self,
+        confirmation: ConfirmationCard,
+        *,
+        current_node: Optional[str] = None,
+        query_text: Optional[str] = None,
+    ):
+        payload = {
             "confirmation": confirmation.model_dump()
-        })
+        }
+        if current_node:
+            payload["current_node"] = current_node
+        if query_text:
+            payload["query_text"] = query_text
+        await self.emit("confirm", payload)
 
     async def emit_error(self, error_payload: Dict[str, Any]):
         await self.emit("error", {
@@ -220,10 +231,20 @@ async def stream_error(stream: Optional[QueryStreamEmitter], error_payload: Dict
         await stream.emit_error(error_payload)
 
 
-async def stream_confirmation(stream: Optional[QueryStreamEmitter], confirmation: ConfirmationCard):
+async def stream_confirmation(
+    stream: Optional[QueryStreamEmitter],
+    confirmation: ConfirmationCard,
+    *,
+    current_node: Optional[str] = None,
+    query_text: Optional[str] = None,
+):
     """推送 IR 确认卡到 WebSocket"""
     if stream and confirmation:
-        await stream.emit_confirmation(confirmation)
+        await stream.emit_confirmation(
+            confirmation,
+            current_node=current_node,
+            query_text=query_text,
+        )
 
 
 async def stream_table_selection(stream: Optional[QueryStreamEmitter], table_selection: TableSelectionCard, query_id: Optional[str] = None):
