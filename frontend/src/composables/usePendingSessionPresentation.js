@@ -97,18 +97,21 @@ export function usePendingSessionPresentation({
 
     if (pendingSessionNode.value === 'table_resolution') {
       if (pendingTableSelection.value?.manual_table_override || pendingSessionState.value.manual_table_override) {
-        return ['已切换为手动选表，请重新确认要查询的数据表。']
+        return ['请从全部数据表中选择要查询的数据表，可单选，也可多选。']
       }
 
-      const goalSummary = safeSummary.user_goal_summary && safeSummary.user_goal_summary !== pendingQueryText.value
-        ? `当前理解：${safeSummary.user_goal_summary}`
-        : ''
-      const reasonText = pendingTableSelection.value?.message ||
-        pendingTableSelection.value?.confirmation_reason ||
-        safeSummary.open_points?.[0] ||
-        '系统识别到多个候选表，需要您确认后再继续生成查询草稿。'
+      const draftUnderstandingItems = splitDraftUnderstandingItems(
+        pendingConfirmationView.value?.draft?.natural_language || ''
+      )
+      if (draftUnderstandingItems.length > 0) {
+        return draftUnderstandingItems
+      }
 
-      return [goalSummary, reasonText].map(normalizeSummaryItem).filter(Boolean)
+      const goalSummary = safeSummary.user_goal_summary
+        ? `当前理解：${safeSummary.user_goal_summary}`
+        : '系统已识别到可能相关的数据表，请确认后继续。'
+
+      return [goalSummary].map(normalizeSummaryItem).filter(Boolean)
     }
 
     if (pendingSessionNode.value === 'execution_guard') {
@@ -142,6 +145,21 @@ export function usePendingSessionPresentation({
   })
 
   const pendingSessionSummaryText = computed(() => pendingSessionSummaryItems.value.join('\n'))
+
+  const pendingSessionChallengeItem = computed(() => {
+    if (pendingSessionNode.value === 'table_resolution') {
+      if (pendingTableSelection.value?.manual_table_override || pendingSessionState.value.manual_table_override) {
+        return ''
+      }
+      return normalizeSummaryItem(
+        pendingTableSelection.value?.confirmation_reason ||
+        pendingConfirmationView.value?.context?.safe_summary?.open_points?.[0] ||
+        ''
+      )
+    }
+
+    return ''
+  })
 
   const pendingSessionDomainHint = computed(() => {
     const domainHint = pendingConfirmationView.value?.context?.safe_summary?.domain_hint || ''
@@ -178,6 +196,7 @@ export function usePendingSessionPresentation({
     pendingSessionIcon,
     pendingSessionSummaryItems,
     pendingSessionSummaryText,
+    pendingSessionChallengeItem,
     pendingSessionDomainHint,
     pendingSessionKnownConstraints,
     pendingTableResolutionDraftPreview,

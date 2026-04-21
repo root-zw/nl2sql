@@ -32,6 +32,7 @@ export function useQueryActionControls({
   pendingSessionNode,
   pendingSessionActionLoading,
   selectedTableIds,
+  pendingTableSelection,
   showAllAccessibleTables,
   canUsePendingAction,
   confirmTableSelection,
@@ -53,9 +54,14 @@ export function useQueryActionControls({
     const commonDisabled = pendingSessionActionLoading.value
 
     if (pendingSessionNode.value === 'table_resolution') {
+      const hasModelRecommendedTables = (
+        (pendingTableSelection.value?.recommended_table_ids?.length || 0) > 0 ||
+        (pendingTableSelection.value?.selected_table_ids?.length || 0) > 0
+      ) && !pendingTableSelection.value?.manual_table_override
+
       return filterVisibleActionButtons([
         buildPendingActionButton('choose_table', {
-          label: `✓ 确认选择 (${selectedTableIds.value.length}个表)`,
+          label: selectedTableIds.value.length > 1 ? `确认所选（${selectedTableIds.value.length}）` : '确认所选',
           className: 'btn-confirm',
           disabled: selectedTableIds.value.length === 0 || commonDisabled,
           onClick: () => confirmTableSelection()
@@ -65,23 +71,24 @@ export function useQueryActionControls({
           className: 'btn-secondary',
           disabled: commonDisabled,
           onClick: () => requestTableReselection(),
-          visible: !showAllAccessibleTables.value
+          visible: !showAllAccessibleTables.value && hasModelRecommendedTables
         }),
         buildPendingActionButton('back_to_recommend', {
-          label: '← 返回推荐',
+          label: '返回推荐',
           className: 'btn-back-to-recommend',
           disabled: commonDisabled,
           onClick: () => backToRecommendTables(),
           visible: showAllAccessibleTables.value
         }),
         buildPendingActionButton('manual_select_table', {
-          label: '手动选表',
+          label: '查看所有表',
           className: 'btn-secondary',
           disabled: commonDisabled,
-          onClick: () => requestManualTableSelection()
+          onClick: () => requestManualTableSelection(),
+          visible: !showAllAccessibleTables.value
         }),
         buildPendingActionButton('revise', {
-          label: '修改问题',
+          label: '改问题',
           className: 'btn-secondary',
           disabled: commonDisabled,
           onClick: () => focusPendingReplyInput('请修改为：'),
@@ -99,7 +106,7 @@ export function useQueryActionControls({
     if (pendingSessionNode.value === 'execution_guard') {
       return filterVisibleActionButtons([
         buildPendingActionButton('approve_execution', {
-          label: '✓ 确认执行',
+          label: '继续执行',
           className: 'btn-confirm',
           disabled: commonDisabled,
           onClick: () => approveExecution()
@@ -112,7 +119,7 @@ export function useQueryActionControls({
           visible: canUsePendingAction('change_table')
         }),
         buildPendingActionButton('revise', {
-          label: '修改问题',
+          label: '改问题',
           className: 'btn-secondary',
           disabled: commonDisabled,
           onClick: () => focusPendingReplyInput('请修改为：'),
@@ -130,13 +137,13 @@ export function useQueryActionControls({
     if (pendingSessionNode.value === 'draft_confirmation') {
       return filterVisibleActionButtons([
         buildPendingActionButton('confirm_draft', {
-          label: '✓ 确认当前草稿',
+          label: '继续',
           className: 'btn-confirm',
           disabled: commonDisabled,
           onClick: () => confirmDraftRevision()
         }),
         buildPendingActionButton('revise', {
-          label: '修改问题',
+          label: '改问题',
           className: 'btn-secondary',
           disabled: commonDisabled,
           onClick: () => focusPendingReplyInput('请修改为：'),

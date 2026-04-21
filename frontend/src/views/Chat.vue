@@ -401,67 +401,15 @@
                     </div>
                   </div>
 
-                  <div
-                    v-if="pendingSessionNode === 'table_resolution' && (pendingSessionDomainHint || pendingSessionKnownConstraints.length)"
-                    class="session-context-section"
-                  >
-                    <div v-if="pendingSessionDomainHint" class="session-context-row">
-                      <p class="section-label">📁 领域提示：</p>
-                      <div class="session-context-chip-list">
-                        <span class="session-context-chip">{{ pendingSessionDomainHint }}</span>
-                      </div>
-                    </div>
-                    <div v-if="pendingSessionKnownConstraints.length" class="session-context-row">
-                      <p class="section-label">📌 已知约束：</p>
-                      <div class="session-context-chip-list">
-                        <span
-                          v-for="(constraint, index) in pendingSessionKnownConstraints"
-                          :key="`${constraint}-${index}`"
-                          class="session-context-chip"
-                        >
-                          {{ constraint }}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div
-                    v-if="pendingSessionNode === 'table_resolution' && pendingTableResolutionDraftPreview"
-                    class="draft-preview-section"
-                  >
-                    <p class="section-label">🧭 暂定查询草稿：</p>
-                    <div class="draft-preview-box">
-                      <pre class="understanding-text">{{ pendingTableResolutionDraftPreview.natural_language }}</pre>
-                    </div>
-                    <div class="draft-preview-tip">
-                      这是基于当前候选表生成的暂定理解，确认选表后系统会继续重算。
-                    </div>
-                    <div v-if="pendingTableResolutionDraftPreview.warnings.length" class="warnings-section">
-                      <div
-                        v-for="(warning, index) in pendingTableResolutionDraftPreview.warnings"
-                        :key="`draft-preview-warning-${index}`"
-                        class="warning-tag"
-                      >
-                        {{ warning }}
-                      </div>
-                    </div>
+                  <div v-if="pendingSessionNode === 'table_resolution' && pendingSessionChallengeItem" class="pending-challenge-section">
+                    <p class="section-label">❓ 需要确认：</p>
+                    <div class="pending-challenge-text">{{ pendingSessionChallengeItem }}</div>
                   </div>
 
                   <template v-if="pendingSessionNode === 'table_resolution'">
                     <div class="table-selection-tip unified-table-tip">
-                      <span v-if="showAllAccessibleTables">以下是您可访问的所有数据表，请重新确认要查询的表：</span>
-                      <span v-else-if="pendingTableSelection?.is_cross_year_query" class="cross-year-tip">
-                        🗓️ 跨年度查询：您可以选择多个年份的数据表进行联合查询
-                      </span>
-                      <span v-else>请选择接下来要使用的数据表</span>
-                    </div>
-
-                    <div
-                      v-if="!showAllAccessibleTables && pendingTableSelection?.confirmation_reason"
-                      class="confirmation-reason-hint"
-                    >
-                      <span class="hint-icon">💡</span>
-                      <span class="hint-text">{{ pendingTableSelection.confirmation_reason }}</span>
+                      <span v-if="showAllAccessibleTables">请从全部数据表中选择，可单选，也可多选。</span>
+                      <span v-else>请在下方选择数据表，可单选，也可多选。</span>
                     </div>
 
                     <div v-if="showAllAccessibleTables" class="all-tables-search">
@@ -487,15 +435,19 @@
                           <span v-if="isTableSelected(candidate.table_id)" class="checkbox-tick">✓</span>
                         </div>
                         <div class="candidate-info">
-                          <div class="candidate-name">{{ candidate.table_name }}</div>
-                          <div class="candidate-desc">{{ candidate.description }}</div>
-                          <div v-if="candidate.reason" class="candidate-reason">💡 {{ candidate.reason }}</div>
-                          <div v-if="candidate.data_year" class="candidate-year">📅 {{ candidate.data_year }}年度数据</div>
+                          <div class="candidate-topline">
+                            <div class="candidate-name">{{ candidate.table_name }}</div>
+                            <div class="candidate-score">{{ Math.round((candidate.confidence || 0) * 100) }}%</div>
+                          </div>
+                          <div class="candidate-meta">
+                            <span v-if="candidate.description" class="candidate-meta-item">{{ candidate.description }}</span>
+                            <span v-if="candidate.data_year" class="candidate-meta-item">{{ candidate.data_year }}年度</span>
+                            <span v-if="candidate.domain_name" class="candidate-meta-item">{{ candidate.domain_name }}</span>
+                          </div>
                         </div>
-                        <div class="candidate-score">{{ Math.round((candidate.confidence || 0) * 100) }}%</div>
                       </div>
                       <div v-if="visibleCandidates.length === 0" class="no-tables-found">
-                        <span>当前推荐候选已用尽，请改为手动选表。</span>
+                        <span>当前推荐表为空，请查看所有表。</span>
                       </div>
                     </div>
 
@@ -511,10 +463,14 @@
                           <span v-if="isTableSelected(table.table_id)">✓</span>
                         </div>
                         <div class="candidate-info">
-                          <div class="candidate-name">{{ table.table_name }}</div>
-                          <div class="candidate-desc">{{ table.description }}</div>
-                          <div v-if="table.data_year" class="candidate-year">📅 {{ table.data_year }}年度数据</div>
-                          <div v-if="table.domain_name" class="candidate-domain">📁 {{ table.domain_name }}</div>
+                          <div class="candidate-topline">
+                            <div class="candidate-name">{{ table.table_name }}</div>
+                          </div>
+                          <div class="candidate-meta">
+                            <span v-if="table.description" class="candidate-meta-item">{{ table.description }}</span>
+                            <span v-if="table.data_year" class="candidate-meta-item">{{ table.data_year }}年度</span>
+                            <span v-if="table.domain_name" class="candidate-meta-item">{{ table.domain_name }}</span>
+                          </div>
                         </div>
                       </div>
                       <div v-if="filteredAllTables.length === 0" class="no-tables-found">
@@ -1292,9 +1248,7 @@ const {
   pendingSessionIcon,
   pendingSessionSummaryItems,
   pendingSessionSummaryText,
-  pendingSessionDomainHint,
-  pendingSessionKnownConstraints,
-  pendingTableResolutionDraftPreview,
+  pendingSessionChallengeItem,
 } = usePendingSessionPresentation({
   pendingSessionSnapshot,
   pendingSessionState,
@@ -1307,6 +1261,7 @@ const { pendingSessionActionButtons, getVisibleResultActions, hasVisibleResultAc
   pendingSessionNode,
   pendingSessionActionLoading,
   selectedTableIds,
+  pendingTableSelection,
   showAllAccessibleTables,
   canUsePendingAction,
   confirmTableSelection,
@@ -2470,17 +2425,11 @@ function isTableSelected(tableId) {
 
 function toggleTableSelection(candidate) {
   const tableId = candidate.table_id
-  const allowMulti = pendingTableSelection.value?.allow_multi_select
-  
-  if (allowMulti) {
-    const index = selectedTableIds.value.indexOf(tableId)
-    if (index >= 0) {
-      selectedTableIds.value.splice(index, 1)
-    } else {
-      selectedTableIds.value.push(tableId)
-    }
+  const index = selectedTableIds.value.indexOf(tableId)
+  if (index >= 0) {
+    selectedTableIds.value.splice(index, 1)
   } else {
-    selectedTableIds.value = [tableId]
+    selectedTableIds.value.push(tableId)
   }
   selectedTableId.value = selectedTableIds.value[0] || null
 }
@@ -2571,12 +2520,7 @@ function toggleTableSelectionById(tableId) {
   if (isSelected) {
     selectedTableIds.value = selectedTableIds.value.filter(id => id !== tableId)
   } else {
-    // 检查是否允许多选
-    if (pendingTableSelection.value?.allow_multi_select) {
-      selectedTableIds.value = [...selectedTableIds.value, tableId]
-    } else {
-      selectedTableIds.value = [tableId]
-    }
+    selectedTableIds.value = [...selectedTableIds.value, tableId]
   }
   selectedTableId.value = selectedTableIds.value[0] || null
 }
@@ -4581,6 +4525,20 @@ watch(isLoggedIn, (val) => {
   font-family: inherit;
 }
 
+.pending-challenge-section {
+  margin-bottom: 16px;
+}
+
+.pending-challenge-text {
+  padding: 10px 12px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.18);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
 .warnings-section {
   margin-bottom: 16px;
 }
@@ -4768,54 +4726,32 @@ watch(isLoggedIn, (val) => {
 }
 
 .table-selection-tip {
-  padding: 12px 16px;
-  font-size: 13px;
+  padding: 8px 0 12px;
+  font-size: 12px;
   color: var(--text-muted);
-  border-bottom: 1px solid var(--border-color);
 }
 
 .unified-table-tip {
-  margin: 0 -16px 12px;
+  margin: 0 0 8px;
 }
 
 .cross-year-tip {
   color: var(--warning-color);
 }
 
-/* 确认原因提示 */
-.confirmation-reason-hint {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
-  margin: 0;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
-}
-
-.confirmation-reason-hint .hint-icon {
-  font-size: 14px;
-}
-
-.confirmation-reason-hint .hint-text {
-  font-size: 12px;
-  color: var(--primary-color);
-  line-height: 1.4;
-}
-
 .table-candidates {
-  padding: 16px;
+  padding: 0;
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .table-candidate {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px;
-  background: var(--bg-main);
-  border-radius: var(--radius-sm);
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-secondary);
+  border-radius: 10px;
   border: 1px solid var(--border-color);
   cursor: pointer;
   transition: all 0.2s;
@@ -4827,31 +4763,25 @@ watch(isLoggedIn, (val) => {
 
 .table-candidate.selected {
   border-color: var(--accent-color);
-  border-width: 3px;
-  background: var(--bg-hover);
-  box-shadow: 0 4px 16px rgba(2, 132, 199, 0.25);
+  background: rgba(2, 132, 199, 0.08);
+  box-shadow: none;
 }
 
 .table-candidate.is-year-table {
-  border-left: 3px solid var(--text-secondary);
-}
-
-.table-candidate.is-year-table .candidate-checkbox {
-  background: var(--bg-hover);
-  border-color: var(--border-color);
+  border-left: 2px solid var(--text-secondary);
 }
 
 .candidate-checkbox {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  border: 2px solid var(--border-color);
-  background: var(--bg-hover);
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1.5px solid var(--border-color);
+  background: var(--bg-main);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  font-size: 14px;
+  font-size: 12px;
   color: var(--primary-color);
   transition: all 0.2s;
 }
@@ -4859,27 +4789,7 @@ watch(isLoggedIn, (val) => {
 .table-candidate.selected .candidate-checkbox {
   background: var(--primary-color);
   border-color: var(--primary-color);
-  color: #fef3c7 !important;
-  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.4);
-}
-
-/* 确保选中状态下，即使是年份表，对勾颜色也正确显示 */
-.table-candidate.selected.is-year-table .candidate-checkbox {
-  background: var(--primary-color);
-  border-color: var(--primary-color);
-  color: #fef3c7 !important;
-}
-
-/* 确保对勾符号本身继承颜色 */
-.candidate-checkbox span,
-.candidate-checkbox .checkbox-tick {
-  color: inherit;
-  display: inline-block;
-}
-
-/* 选中状态下对勾的样式 */
-.table-candidate.selected .candidate-checkbox .checkbox-tick {
-  color: #fef3c7 !important;
+  color: white !important;
 }
 
 .candidate-info {
@@ -4887,30 +4797,40 @@ watch(isLoggedIn, (val) => {
   min-width: 0;
 }
 
+.candidate-topline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
 .candidate-name {
   font-size: 14px;
   font-weight: 600;
-  margin-bottom: 4px;
+  min-width: 0;
 }
 
-.candidate-desc {
-  font-size: 12px;
-  color: var(--text-muted);
-  line-height: 1.4;
-}
-
-.candidate-year {
-  font-size: 11px;
-  color: var(--warning-color);
+.candidate-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-top: 4px;
 }
 
-.candidate-score {
+.candidate-meta-item {
   font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  min-width: 0;
+}
+
+.candidate-score {
+  flex-shrink: 0;
+  font-size: 11px;
   font-weight: 500;
   color: var(--text-secondary);
-  padding: 4px 10px;
-  background: var(--bg-hover);
+  padding: 2px 8px;
+  background: var(--bg-main);
   border-radius: 12px;
 }
 
@@ -4919,8 +4839,8 @@ watch(isLoggedIn, (val) => {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 12px 16px;
-  padding: 12px 16px;
+  margin: 8px 0 12px;
+  padding: 10px 12px;
   background: var(--bg-secondary);
   border-radius: 10px;
   border: 1px solid var(--border-color);
@@ -4956,27 +4876,10 @@ watch(isLoggedIn, (val) => {
 
 /* 未找到提示 */
 .no-tables-found {
-  padding: 24px;
+  padding: 16px 12px;
   text-align: center;
   color: var(--text-muted);
-  font-size: 14px;
-}
-
-/* 候选理由 */
-.candidate-reason {
   font-size: 12px;
-  color: var(--success-color);
-  margin-top: 4px;
-  padding: 6px 10px;
-  background: var(--success-bg, rgba(16, 185, 129, 0.1));
-  border-radius: 6px;
-}
-
-/* 业务域标签 */
-.candidate-domain {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 4px;
 }
 
 /* 返回推荐按钮 */
@@ -4998,9 +4901,9 @@ watch(isLoggedIn, (val) => {
 
 .table-selection-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
-  padding: 16px;
-  border-top: 1px solid var(--border-color);
+  padding: 14px 0 0;
 }
 
 /* ==================== 图表区域 ==================== */

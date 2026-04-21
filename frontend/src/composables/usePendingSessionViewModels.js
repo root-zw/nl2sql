@@ -40,17 +40,10 @@ export function usePendingSessionViewModels({
     const recommendedRaw = card?.recommended_table_ids || state.recommended_table_ids || []
     const recommended = recommendedRaw.filter(id => !rejectedTableIds.has(id))
     if (recommended.length > 0) {
-      return card?.allow_multi_select ? recommended : [recommended[0]]
+      return recommended
     }
 
     const candidates = (card?.candidates || []).filter(candidate => !rejectedTableIds.has(candidate.table_id))
-    if (card?.is_cross_year_query && card?.allow_multi_select) {
-      const yearTables = candidates
-        .filter(candidate => candidate.data_year)
-        .map(candidate => candidate.table_id)
-      if (yearTables.length > 0) return yearTables
-    }
-
     return candidates[0] ? [candidates[0].table_id] : []
   }
 
@@ -129,7 +122,7 @@ export function usePendingSessionViewModels({
       recommended_table_ids: tableResolution.recommended_table_ids || [],
       selected_table_ids: tableResolution.selected_table_ids || getSnapshotSelectedTableIds(normalized),
       rejected_table_ids: tableResolution.rejected_table_ids || normalized.state?.rejected_table_ids || [],
-      allow_multi_select: tableResolution.allow_multi_select ?? false,
+      allow_multi_select: true,
       multi_table_mode: tableResolution.multi_table_mode || normalized.state?.multi_table_mode || null,
       manual_table_override: isManualTableOverride(normalized)
     }
