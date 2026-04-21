@@ -112,6 +112,11 @@ def test_chat_view_uses_result_action_contract_for_result_stage_actions():
     assert "async function requestManualTableSelection()" in content
     assert "resetAllTablesFilter()" in content
     assert "await expandAllTables()" in content
+    assert "function appendUserMessage(text, { metadata = null, optimistic = false } = {})" in content
+    assert "function rollbackOptimisticUserMessage(messageId, text = '')" in content
+    assert "const optimisticReplyMessageId = (isPendingReply || isResultRevisionReply)" in content
+    assert "rollbackOptimisticUserMessage(optimisticReplyMessageId, text)" in content
+    assert "return await submitPendingSessionAction({" in content
     assert "semanticAction: 'manual_select_table'" not in content
     assert "const restartingQueryIds = reactive({})" not in content
     assert "function canRetryTableSelection(msg)" not in content

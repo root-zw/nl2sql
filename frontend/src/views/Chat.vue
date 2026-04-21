@@ -1359,6 +1359,40 @@ function createAssistantPlaceholder(messageId = null) {
   return assistantMessageId
 }
 
+function appendUserMessage(text, { metadata = null, optimistic = false } = {}) {
+  const userMessageId = `temp-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  messages.value.push({
+    message_id: userMessageId,
+    conversation_id: currentConversationId.value,
+    role: 'user',
+    content: text,
+    status: 'completed',
+    metadata: optimistic ? {
+      ...(metadata || {}),
+      local_optimistic: true
+    } : metadata,
+    created_at: new Date().toISOString()
+  })
+  return userMessageId
+}
+
+function rollbackOptimisticUserMessage(messageId, text = '') {
+  if (!messageId) return
+
+  const messageIndex = messages.value.findIndex(msg => msg.message_id === messageId)
+  if (messageIndex >= 0) {
+    messages.value.splice(messageIndex, 1)
+  }
+
+  if (text) {
+    queryText.value = text
+    nextTick(() => {
+      autoResizeTextarea()
+      inputTextarea.value?.focus()
+    })
+  }
+}
+
 function reuseOrCreateAssistantMessage(queryId) {
   const snapshotMessageId = pendingSessionSnapshot.value?.message_id ||
     pendingSessionSnapshot.value?.session?.message_id ||
@@ -1665,6 +1699,8 @@ async function handleSendMessage() {
   
   const text = queryText.value.trim()
   if (!text) return
+  const isPendingReply = hasActivePendingSession.value
+  const isResultRevisionReply = Boolean(resultReplyContext.value?.queryId)
   const isFreshQuery = !hasActivePendingSession.value && !resultReplyContext.value?.queryId
   const confirmationModeForDisplay = isFreshQuery ? effectiveQueryConfirmationMode.value : null
   
@@ -1684,21 +1720,19 @@ async function handleSendMessage() {
       return
     }
   }
-  
-  // 添加用户消息到列表
-  const userMessage = {
-    message_id: 'temp-user-' + Date.now(),
-    conversation_id: currentConversationId.value,
-    role: 'user',
-    content: text,
-    status: 'completed',
-    metadata: confirmationModeForDisplay ? {
+
+  const userMessageMetadata = confirmationModeForDisplay ? {
       confirmation_mode: confirmationModeForDisplay,
       confirmation_mode_label: getConfirmationModeLabel(confirmationModeForDisplay)
-    } : null,
-    created_at: new Date().toISOString()
+    } : null
+
+  const optimisticReplyMessageId = (isPendingReply || isResultRevisionReply)
+    ? appendUserMessage(text, { optimistic: true })
+    : null
+
+  if (!optimisticReplyMessageId) {
+    appendUserMessage(text, { metadata: userMessageMetadata })
   }
-  messages.value.push(userMessage)
 
   queryText.value = ''
   // 重置输入框高度
@@ -1707,13 +1741,19 @@ async function handleSendMessage() {
   }
   scrollToBottom()
 
-  if (hasActivePendingSession.value) {
-    await handlePendingSessionReply(text)
+  if (isPendingReply) {
+    const result = await handlePendingSessionReply(text)
+    if (!result) {
+      rollbackOptimisticUserMessage(optimisticReplyMessageId, text)
+    }
     return
   }
 
-  if (resultReplyContext.value?.queryId) {
-    await submitResultRevisionReply(text)
+  if (isResultRevisionReply) {
+    const result = await submitResultRevisionReply(text)
+    if (!result) {
+      rollbackOptimisticUserMessage(optimisticReplyMessageId, text)
+    }
     return
   }
 
@@ -2230,7 +2270,7 @@ async function submitPendingSessionAction({
 }
 
 async function handlePendingSessionReply(text) {
-  await submitPendingSessionAction({
+  return await submitPendingSessionAction({
     naturalLanguageReply: text,
     preserveSelection: true
   })
