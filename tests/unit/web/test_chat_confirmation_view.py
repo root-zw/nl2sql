@@ -98,13 +98,16 @@ def test_chat_view_uses_result_action_contract_for_result_stage_actions():
     assert "function getPendingActionBinding(semanticAction)" in content
     assert "const resolvedActionType = semanticAction ? getPendingActionBinding(semanticAction) : actionType" in content
     assert "semanticAction: 'choose_table'" in content
-    assert "semanticAction: 'manual_select_table'" in content
     assert "semanticAction: 'approve_execution'" in content
     assert "semanticAction: 'confirm_draft'" in content
     assert "semanticAction: 'cancel_query'" in content
     assert "await loadResultSessionSnapshot(msg.query_id)" in content
     assert "msg.status === 'error' && hasVisibleResultActions(msg)" in content
     assert "当前将作为上一条结果的修改意见提交" in content
+    assert "async function requestManualTableSelection()" in content
+    assert "resetAllTablesFilter()" in content
+    assert "await expandAllTables()" in content
+    assert "semanticAction: 'manual_select_table'" not in content
     assert "const restartingQueryIds = reactive({})" not in content
     assert "function canRetryTableSelection(msg)" not in content
     assert "不是这张表，重新选表" not in content
@@ -221,7 +224,9 @@ def test_chat_view_renders_structured_draft_confirmation_details():
     assert "pendingSessionNode === 'table_resolution' && pendingSessionChallengeItem" in content
     assert "class=\"pending-challenge-text\"" in content
     assert "class=\"candidate-topline\"" in content
-    assert "class=\"candidate-meta\"" in content
+    assert "class=\"candidate-primary\"" in content
+    assert "class=\"candidate-meta candidate-meta-inline\"" in content
+    assert "class=\"candidate-meta-item\"" in content
     assert "pendingConfirm?.selected_table_names?.length" not in content
     assert "pendingConfirm?.confidence !== null" not in content
     assert "pendingConfirm?.open_points?.length" not in content

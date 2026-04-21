@@ -436,13 +436,15 @@
                         </div>
                         <div class="candidate-info">
                           <div class="candidate-topline">
-                            <div class="candidate-name">{{ candidate.table_name }}</div>
+                            <div class="candidate-primary">
+                              <div class="candidate-name">{{ candidate.table_name }}</div>
+                              <div class="candidate-meta candidate-meta-inline">
+                                <span v-if="candidate.description" class="candidate-meta-item">{{ candidate.description }}</span>
+                                <span v-if="candidate.data_year" class="candidate-meta-item">{{ candidate.data_year }}年度</span>
+                                <span v-if="candidate.domain_name" class="candidate-meta-item">{{ candidate.domain_name }}</span>
+                              </div>
+                            </div>
                             <div class="candidate-score">{{ Math.round((candidate.confidence || 0) * 100) }}%</div>
-                          </div>
-                          <div class="candidate-meta">
-                            <span v-if="candidate.description" class="candidate-meta-item">{{ candidate.description }}</span>
-                            <span v-if="candidate.data_year" class="candidate-meta-item">{{ candidate.data_year }}年度</span>
-                            <span v-if="candidate.domain_name" class="candidate-meta-item">{{ candidate.domain_name }}</span>
                           </div>
                         </div>
                       </div>
@@ -464,12 +466,14 @@
                         </div>
                         <div class="candidate-info">
                           <div class="candidate-topline">
-                            <div class="candidate-name">{{ table.table_name }}</div>
-                          </div>
-                          <div class="candidate-meta">
-                            <span v-if="table.description" class="candidate-meta-item">{{ table.description }}</span>
-                            <span v-if="table.data_year" class="candidate-meta-item">{{ table.data_year }}年度</span>
-                            <span v-if="table.domain_name" class="candidate-meta-item">{{ table.domain_name }}</span>
+                            <div class="candidate-primary">
+                              <div class="candidate-name">{{ table.table_name }}</div>
+                              <div class="candidate-meta candidate-meta-inline">
+                                <span v-if="table.description" class="candidate-meta-item">{{ table.description }}</span>
+                                <span v-if="table.data_year" class="candidate-meta-item">{{ table.data_year }}年度</span>
+                                <span v-if="table.domain_name" class="candidate-meta-item">{{ table.domain_name }}</span>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -2110,11 +2114,13 @@ async function requestTableReselection() {
 }
 
 async function requestManualTableSelection() {
-  await submitPendingSessionAction({
-    semanticAction: 'manual_select_table',
-    payload: { mode: 'manual_select', reason: '用户点击手动选表' },
-    preserveSelection: false
-  })
+  if (allAccessibleTables.value.length > 0) {
+    resetAllTablesFilter()
+    showAllAccessibleTables.value = true
+    return
+  }
+
+  await expandAllTables()
 }
 
 async function approveExecution() {
@@ -2471,8 +2477,7 @@ async function expandAllTables() {
 
     const data = await resp.json()
     allAccessibleTables.value = data.tables || []
-    filteredAllTables.value = allAccessibleTables.value
-    allTablesSearchQuery.value = ''
+    resetAllTablesFilter()
     showAllAccessibleTables.value = true
 
   } catch (e) {
@@ -2482,11 +2487,16 @@ async function expandAllTables() {
   }
 }
 
+function resetAllTablesFilter() {
+  filteredAllTables.value = [...allAccessibleTables.value]
+  allTablesSearchQuery.value = ''
+}
+
 // 过滤所有表
 function filterAllTables() {
   const query = allTablesSearchQuery.value.trim().toLowerCase()
   if (!query) {
-    filteredAllTables.value = allAccessibleTables.value
+    filteredAllTables.value = [...allAccessibleTables.value]
     return
   }
 
@@ -2501,7 +2511,7 @@ function filterAllTables() {
 // 返回推荐模式
 function backToRecommendTables() {
   showAllAccessibleTables.value = false
-  allTablesSearchQuery.value = ''
+  resetAllTablesFilter()
 }
 
 // 通过 table_id 切换选择（用于展开全部模式）
@@ -4789,29 +4799,45 @@ watch(isLoggedIn, (val) => {
 
 .candidate-topline {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   justify-content: space-between;
+}
+
+.candidate-primary {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
 }
 
 .candidate-name {
   font-size: 14px;
   font-weight: 600;
   min-width: 0;
+  line-height: 1.35;
 }
 
 .candidate-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.candidate-meta-inline {
+  flex: 1;
+  align-items: baseline;
 }
 
 .candidate-meta-item {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-muted);
-  line-height: 1.4;
+  line-height: 1.35;
   min-width: 0;
+  word-break: break-word;
 }
 
 .candidate-score {
