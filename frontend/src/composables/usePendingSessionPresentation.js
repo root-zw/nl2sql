@@ -29,6 +29,23 @@ function normalizeSummaryItem(item) {
   return text
 }
 
+function splitDraftUnderstandingItems(text) {
+  const normalizedText = typeof text === 'string' ? text.trim() : ''
+  if (!normalizedText) return []
+
+  const strippedText = normalizedText
+    .replace(/。?请确认是否继续。?$/, '')
+    .trim()
+
+  if (!strippedText) return []
+
+  return strippedText
+    .split('；')
+    .map(item => item.trim().replace(/^[；。]+|[；。]+$/g, ''))
+    .map(normalizeSummaryItem)
+    .filter(Boolean)
+}
+
 const PENDING_SESSION_NODE_META = {
   table_resolution: {
     title: '请确认要使用的数据表',
@@ -101,6 +118,13 @@ export function usePendingSessionPresentation({
     }
 
     if (pendingSessionNode.value === 'draft_confirmation') {
+      const draftUnderstandingItems = splitDraftUnderstandingItems(
+        pendingConfirmationView.value?.draft?.natural_language || ''
+      )
+      if (draftUnderstandingItems.length > 0) {
+        return draftUnderstandingItems
+      }
+
       const draftSummaryItems = []
       if (revisionText) {
         draftSummaryItems.push(`已吸收修改：${revisionText}`)

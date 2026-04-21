@@ -39,7 +39,6 @@ export function useQueryActionControls({
   backToRecommendTables,
   requestManualTableSelection,
   focusPendingReplyInput,
-  requestPendingExplanation,
   cancelPendingSession,
   approveExecution,
   confirmDraftRevision,
@@ -88,13 +87,6 @@ export function useQueryActionControls({
           onClick: () => focusPendingReplyInput('请修改为：'),
           visible: canUsePendingAction('revise')
         }),
-        buildPendingActionButton('request_explanation', {
-          label: '查看系统理解',
-          className: 'btn-secondary',
-          disabled: commonDisabled,
-          onClick: () => requestPendingExplanation(),
-          visible: canUsePendingAction('request_explanation')
-        }),
         buildPendingActionButton('cancel_query', {
           label: '取消',
           className: 'btn-cancel',
@@ -126,13 +118,6 @@ export function useQueryActionControls({
           onClick: () => focusPendingReplyInput('请修改为：'),
           visible: canUsePendingAction('revise')
         }),
-        buildPendingActionButton('request_explanation', {
-          label: '查看系统理解',
-          className: 'btn-secondary',
-          disabled: commonDisabled,
-          onClick: () => requestPendingExplanation(),
-          visible: canUsePendingAction('request_explanation')
-        }),
         buildPendingActionButton('cancel_query', {
           label: '取消查询',
           className: 'btn-cancel',
@@ -163,13 +148,6 @@ export function useQueryActionControls({
           disabled: commonDisabled,
           onClick: () => requestTableReselection(),
           visible: canUsePendingAction('change_table')
-        }),
-        buildPendingActionButton('request_explanation', {
-          label: '查看系统理解',
-          className: 'btn-secondary',
-          disabled: commonDisabled,
-          onClick: () => requestPendingExplanation(),
-          visible: canUsePendingAction('request_explanation')
         }),
         buildPendingActionButton('cancel_query', {
           label: '取消',

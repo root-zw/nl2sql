@@ -34,6 +34,8 @@ def test_chat_view_prefers_confirmation_view_for_pending_session_rendering():
     assert "messages.value = rawMessages.map(hydrateConversationMessage)" in content
     assert "v-if=\"pendingSessionSummaryItems.length\"" in content
     assert "class=\"understanding-list\"" in content
+    assert "🤖 系统理解：" in content
+    assert "🤖 系统确认：" not in content
 
 
 def test_chat_view_uses_resume_directive_to_continue_pending_query():
@@ -123,6 +125,7 @@ def test_query_action_controls_composable_holds_action_mapping_contract():
     assert "buildPendingActionButton('cancel_query'" in content
     assert "label: '✓ 确认执行'" in content
     assert "label: '手动选表'" in content
+    assert "requestPendingExplanation" not in content
     assert "revise: '修改问题'" in content
     assert "request_explanation: '查看系统理解'" in content
     assert "继续修改" not in content
@@ -194,7 +197,10 @@ def test_pending_session_presentation_composable_holds_node_display_contract():
     assert "function looksLikeUuid(value)" in content
     assert "function normalizeTableSummaryItem(text, prefix)" in content
     assert "function normalizeSummaryItem(item)" in content
+    assert "function splitDraftUnderstandingItems(text)" in content
     assert "for (const prefix of ['当前数据表：', '当前涉及数据表：'])" in content
+    assert ".split('；')" in content
+    assert "pendingConfirmationView.value?.draft?.natural_language || ''" in content
     assert "return looksLikeUuid(domainHint) ? '' : domainHint" in content
     assert "需要您确认后再继续生成查询草稿" in content
     assert "需要您确认后再继续生成 IR" not in content

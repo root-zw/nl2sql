@@ -387,7 +387,7 @@
                   </div>
 
                   <div v-if="pendingSessionSummaryItems.length" class="ai-understanding-section">
-                    <p class="section-label">🤖 系统确认：</p>
+                    <p class="section-label">🤖 系统理解：</p>
                     <div class="understanding-content">
                       <ul class="understanding-list">
                         <li
@@ -1314,7 +1314,6 @@ const { pendingSessionActionButtons, getVisibleResultActions, hasVisibleResultAc
   backToRecommendTables,
   requestManualTableSelection,
   focusPendingReplyInput,
-  requestPendingExplanation,
   cancelPendingSession,
   approveExecution,
   confirmDraftRevision,
@@ -2170,14 +2169,6 @@ async function requestManualTableSelection() {
     semanticAction: 'manual_select_table',
     payload: { mode: 'manual_select', reason: '用户点击手动选表' },
     preserveSelection: false
-  })
-}
-
-async function requestPendingExplanation() {
-  await submitPendingSessionAction({
-    actionType: 'request_explanation',
-    payload: { source: 'ui_button' },
-    preserveSelection: true
   })
 }
 
