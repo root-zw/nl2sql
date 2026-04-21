@@ -95,7 +95,6 @@ def test_chat_view_uses_result_action_contract_for_result_stage_actions():
     assert "async function submitResultSessionAction" in content
     assert "function startResultRevision(msg)" in content
     assert "async function submitResultRevisionReply(text)" in content
-    assert "async function requestResultExplanation(msg)" in content
     assert "function getPendingActionBinding(semanticAction)" in content
     assert "const resolvedActionType = semanticAction ? getPendingActionBinding(semanticAction) : actionType" in content
     assert "semanticAction: 'choose_table'" in content
@@ -118,7 +117,7 @@ def test_query_action_controls_composable_holds_action_mapping_contract():
     content = composable.read_text(encoding="utf-8")
 
     assert "export function useQueryActionControls({" in content
-    assert "const RESULT_ACTION_ORDER = ['change_table', 'revise', 'request_explanation']" in content
+    assert "const RESULT_ACTION_ORDER = ['change_table', 'revise']" in content
     assert "const pendingSessionActionButtons = computed(() =>" in content
     assert "function getVisibleResultActions(msg)" in content
     assert "buildPendingActionButton('choose_table'" in content
@@ -132,7 +131,7 @@ def test_query_action_controls_composable_holds_action_mapping_contract():
     assert "requestPendingExplanation" not in content
     assert "visible: !showAllAccessibleTables.value && hasModelRecommendedTables" in content
     assert "revise: '修改问题'" in content
-    assert "request_explanation: '查看系统理解'" in content
+    assert "request_explanation: '查看系统理解'" not in content
     assert "继续修改" not in content
     assert "解释一下" not in content
 

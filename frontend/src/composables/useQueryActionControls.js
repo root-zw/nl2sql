@@ -1,10 +1,9 @@
 import { computed } from 'vue'
 
-const RESULT_ACTION_ORDER = ['change_table', 'revise', 'request_explanation']
+const RESULT_ACTION_ORDER = ['change_table', 'revise']
 const RESULT_ACTION_LABELS = {
   change_table: '重新选表',
-  revise: '修改问题',
-  request_explanation: '查看系统理解'
+  revise: '修改问题'
 }
 
 function buildPendingActionButton(key, {
@@ -48,7 +47,6 @@ export function useQueryActionControls({
   isResultActionBusy,
   reopenTableSelectionForMessage,
   startResultRevision,
-  requestResultExplanation,
 }) {
   const pendingSessionActionButtons = computed(() => {
     const commonDisabled = pendingSessionActionLoading.value
@@ -186,9 +184,6 @@ export function useQueryActionControls({
     }
     if (actionType === 'revise') {
       return () => startResultRevision(msg)
-    }
-    if (actionType === 'request_explanation') {
-      return () => requestResultExplanation(msg)
     }
     return () => {}
   }

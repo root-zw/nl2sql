@@ -1277,7 +1277,6 @@ const { pendingSessionActionButtons, getVisibleResultActions, hasVisibleResultAc
   isResultActionBusy,
   reopenTableSelectionForMessage,
   startResultRevision,
-  requestResultExplanation,
 })
 
 // 加载数据库连接列表
@@ -2100,15 +2099,6 @@ async function submitResultRevisionReply(text) {
     clearResultReplyContext()
   }
   return result
-}
-
-async function requestResultExplanation(msg) {
-  await submitResultSessionAction(msg, {
-    semanticAction: 'request_explanation',
-    payload: { source: 'result_action_bar' },
-    preserveSelection: true,
-    idempotencyPrefix: 'result-explanation'
-  })
 }
 
 async function requestTableReselection() {
