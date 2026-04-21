@@ -1539,6 +1539,7 @@ async function executeQueryViaWebSocket(text, assistantMessageId, options = {}) 
       selected_table_ids: options.selectedTableIds || null,
       multi_table_mode: options.multiTableMode || null,
       original_query_id: options.originalQueryId || null,
+      resume_as_new_turn: Boolean(options.resumeAsNewTurn),
       confirmation_mode: options.confirmationMode || null,
       analysis_context: options.analysisContext || null,
       followup_resolution: options.followupResolution || null,
@@ -1893,14 +1894,17 @@ async function continueQueryFromPendingState({
   selectedTableIds: continuationTableIds = [],
   multiTableMode = null,
   forceExecute = false,
-  progressText = '思考中...'
+  progressText = '思考中...',
+  resumeAsNewTurn = false
 }) {
   if ((!text && !ir) || !queryId) {
     ElMessage.error('缺少原始查询上下文，无法继续执行。')
     return
   }
 
-  const assistantMessageId = reuseOrCreateAssistantMessage(queryId)
+  const assistantMessageId = resumeAsNewTurn
+    ? createAssistantPlaceholder()
+    : reuseOrCreateAssistantMessage(queryId)
   prepareAssistantPlaceholder(assistantMessageId, progressText)
   clearPendingSessionState({ keepQueryText: true })
   await executeQueryViaWebSocket(text, assistantMessageId, {
@@ -1908,11 +1912,12 @@ async function continueQueryFromPendingState({
     selectedTableIds: continuationTableIds,
     multiTableMode,
     originalQueryId: queryId,
-    forceExecute
+    forceExecute,
+    resumeAsNewTurn
   })
 }
 
-async function continueQueryFromResumeDirective(resumeDirective = {}) {
+async function continueQueryFromResumeDirective(resumeDirective = {}, { resumeAsNewTurn = false } = {}) {
   if (!resumeDirective?.should_resume) return
 
   await continueQueryFromPendingState({
@@ -1922,7 +1927,8 @@ async function continueQueryFromResumeDirective(resumeDirective = {}) {
     selectedTableIds: resumeDirective.selected_table_ids || selectedTableIds.value,
     multiTableMode: resumeDirective.multi_table_mode || pendingTableSelection.value?.multi_table_mode || null,
     forceExecute: Boolean(resumeDirective.force_execute),
-    progressText: resumeDirective.progress_text || '思考中...'
+    progressText: resumeDirective.progress_text || '思考中...',
+    resumeAsNewTurn
   })
 }
 
@@ -2004,7 +2010,9 @@ async function handleSessionActionResult(result, {
   const snapshot = applyPendingSessionSnapshot(sessionSnapshot || result?.session, { preserveSelection })
 
   if (result?.resume_directive?.should_resume) {
-    await continueQueryFromResumeDirective(result.resume_directive)
+    await continueQueryFromResumeDirective(result.resume_directive, {
+      resumeAsNewTurn: Boolean(naturalLanguageReply)
+    })
     return result
   }
 

@@ -45,6 +45,7 @@ class QueryRequest(BaseModel):
     context_depth: Optional[int] = None  # 上下文深度（覆盖默认值）
     analysis_context: Optional[Dict[str, Any]] = None  # 结果后追问上下文
     followup_resolution: Optional[Literal["continue_on_result", "compare_with_result"]] = None  # 结果后追问解析结果
+    resume_as_new_turn: bool = False  # 续接查询时是否作为新的问答轮次展示
     
     def get_selected_table_ids(self) -> List[str]:
         """获取所有选中的表ID（兼容单表和多表模式）"""

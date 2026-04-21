@@ -44,7 +44,9 @@ def test_chat_view_uses_resume_directive_to_continue_pending_query():
 
     assert "async function continueQueryFromResumeDirective" in content
     assert "if (result?.resume_directive?.should_resume)" in content
-    assert "await continueQueryFromResumeDirective(result.resume_directive)" in content
+    assert "await continueQueryFromResumeDirective(result.resume_directive, {" in content
+    assert "resumeAsNewTurn: Boolean(naturalLanguageReply)" in content
+    assert "resume_as_new_turn: Boolean(options.resumeAsNewTurn)" in content
 
 
 def test_chat_view_simplifies_confirmation_mode_to_two_visible_options():
@@ -250,7 +252,9 @@ def test_chat_view_restores_thinking_steps_and_reuses_existing_assistant_message
     assert "nextMessage.metadata?.thinking_steps || nextMessage.thinking_steps" in content
     assert "hidden: Boolean(nextMessage.metadata?.hidden) || isLegacyBlankAssistantMessage(nextMessage)" in content
     assert "function reuseOrCreateAssistantMessage(queryId)" in content
-    assert "const assistantMessageId = reuseOrCreateAssistantMessage(queryId)" in content
+    assert "const assistantMessageId = resumeAsNewTurn" in content
+    assert "? createAssistantPlaceholder()" in content
+    assert ": reuseOrCreateAssistantMessage(queryId)" in content
 
 
 def test_chat_view_shows_result_details_before_narrative_finishes():

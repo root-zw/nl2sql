@@ -203,11 +203,68 @@ def test_submit_query_session_action_route_persists_user_reply_message(monkeypat
     assert captured["metadata"]["query_session_reply"] is True
 
 
+def test_submit_query_session_action_route_skips_persist_for_new_query_resolution(monkeypatch):
+    query_id = uuid4()
+    conversation_id = uuid4()
+    captured = {"called": False}
+
+    async def fake_apply_action(self, **kwargs):
+        return {
+            "resolution": "resolved_to_new_query",
+            "new_query_text": "那武汉今年成交总价排名前十的是哪些地块？",
+            "session": {
+                "query_id": str(query_id),
+                "conversation_id": str(conversation_id),
+                "status": "awaiting_user_action",
+                "current_node": "draft_confirmation",
+            },
+            "idempotent_replay": False,
+        }
+
+    class FakePool:
+        async def acquire(self):
+            return object()
+
+        async def release(self, conn):
+            return None
+
+    async def fake_get_metadata_pool():
+        return FakePool()
+
+    async def fake_add_message(self, **kwargs):
+        captured["called"] = True
+        return {"message_id": str(uuid4())}
+
+    monkeypatch.setattr("server.services.draft_action_service.DraftActionService.apply_action", fake_apply_action)
+    monkeypatch.setattr("server.api.query.routes.get_metadata_pool", fake_get_metadata_pool)
+    monkeypatch.setattr("server.services.conversation_service.ConversationService.add_message", fake_add_message)
+    client = build_test_client()
+
+    response = client.post(
+        f"/api/query-sessions/{query_id}/actions",
+        json={
+            "natural_language_reply": "那武汉今年成交总价排名前十的是哪些地块？",
+            "draft_version": 1,
+            "actor_type": "user",
+            "actor_id": "u1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["resolution"] == "resolved_to_new_query"
+    assert captured["called"] is False
+
+
 def test_query_route_prefers_context_query_id_and_persists_before_streaming():
     routes_file = ROOT_DIR / "server" / "api" / "query" / "routes.py"
     content = routes_file.read_text(encoding="utf-8")
+    api_models_file = ROOT_DIR / "server" / "models" / "api.py"
+    api_models_content = api_models_file.read_text(encoding="utf-8")
 
     assert "query_id = _query_id_ctx.get() or request.original_query_id or str(uuid.uuid4())" in content
+    assert "resume_as_new_turn: bool = False" in api_models_content
+    assert "and not request.resume_as_new_turn" in content
+    assert "elif request.resume_as_new_turn:" in content
     assert "async def _build_ir_display_dict_with_units(" in content
     assert "return f\"{normalized_name}（{normalized_unit}）\"" in content
     assert "async def _return_streamed_query_response(" in content

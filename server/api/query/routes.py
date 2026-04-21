@@ -4815,6 +4815,7 @@ async def submit_query_session_action(
         actor_type == "user"
         and persisted_user_reply
         and conversation_id
+        and result.get("resolution") != "resolved_to_new_query"
         and not result.get("idempotent_replay")
     ):
         pool = await get_metadata_pool()
@@ -5058,6 +5059,7 @@ async def query_stream_socket(websocket: WebSocket):
                 is_resume_request
                 and existing_message_id is not None
                 and str(conversation_uuid) == str(existing_conversation_id)
+                and not request.resume_as_new_turn
             )
 
             if should_reuse_existing_message:
@@ -5084,6 +5086,29 @@ async def query_stream_socket(websocket: WebSocket):
                 )
                 logger.info(
                     "WebSocket 入口复用既有 assistant 消息",
+                    conversation_id=conversation_id,
+                    message_id=str(assistant_message_id),
+                    query_id=query_id,
+                )
+            elif request.resume_as_new_turn:
+                assistant_msg = await conv_service.create_placeholder_message(
+                    conversation_id=conversation_uuid,
+                    role='assistant',
+                    query_id=UUID(query_id),
+                    query_params={
+                        'connection_id': request.connection_id,
+                        'domain_id': request.domain_id
+                    },
+                    metadata={
+                        'hidden': False,
+                        'query_session_pending': False,
+                        'confirmation_mode': effective_confirmation_mode,
+                        'confirmation_mode_label': confirmation_mode_label,
+                    },
+                )
+                assistant_message_id = UUID(str(assistant_msg['message_id']))
+                logger.info(
+                    "WebSocket 入口为续接查询创建新 assistant 消息",
                     conversation_id=conversation_id,
                     message_id=str(assistant_message_id),
                     query_id=query_id,
