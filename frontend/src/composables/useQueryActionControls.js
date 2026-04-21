@@ -52,24 +52,12 @@ export function useQueryActionControls({
     const commonDisabled = pendingSessionActionLoading.value
 
     if (pendingSessionNode.value === 'table_resolution') {
-      const hasModelRecommendedTables = (
-        (pendingTableSelection.value?.recommended_table_ids?.length || 0) > 0 ||
-        (pendingTableSelection.value?.selected_table_ids?.length || 0) > 0
-      ) && !pendingTableSelection.value?.manual_table_override
-
       return filterVisibleActionButtons([
         buildPendingActionButton('choose_table', {
           label: selectedTableIds.value.length > 1 ? `确认所选（${selectedTableIds.value.length}）` : '确认所选',
           className: 'btn-confirm',
           disabled: selectedTableIds.value.length === 0 || commonDisabled,
           onClick: () => confirmTableSelection()
-        }),
-        buildPendingActionButton('change_table', {
-          label: '不是这张表',
-          className: 'btn-secondary',
-          disabled: commonDisabled,
-          onClick: () => requestTableReselection(),
-          visible: !showAllAccessibleTables.value && hasModelRecommendedTables
         }),
         buildPendingActionButton('back_to_recommend', {
           label: '返回推荐',

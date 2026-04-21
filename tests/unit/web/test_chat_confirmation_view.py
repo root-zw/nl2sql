@@ -132,7 +132,8 @@ def test_query_action_controls_composable_holds_action_mapping_contract():
     assert "'确认所选'" in content
     assert "label: '改问题'" in content
     assert "requestPendingExplanation" not in content
-    assert "visible: !showAllAccessibleTables.value && hasModelRecommendedTables" in content
+    assert "label: '不是这张表'" not in content
+    assert "hasModelRecommendedTables" not in content
     assert "revise: '修改问题'" in content
     assert "request_explanation: '查看系统理解'" not in content
     assert "继续修改" not in content
