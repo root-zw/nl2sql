@@ -140,7 +140,10 @@
               <div class="message-content">
                 <!-- 用户消息 -->
                 <div v-if="msg.role === 'user'" class="user-message">
-                  {{ msg.content }}
+                  <div>{{ msg.content }}</div>
+                  <div v-if="getMessageConfirmationModeLabel(msg)" class="user-message-meta">
+                    本次确认：{{ getMessageConfirmationModeLabel(msg) }}
+                  </div>
                 </div>
 
                 <!-- AI 回答 -->
@@ -155,6 +158,26 @@
                   <div v-if="msg.status === 'error'" class="message-error">
                     <span class="error-icon">❌</span>
                     <span>{{ msg.error_message || '查询失败' }}</span>
+                  </div>
+                  <div
+                    v-if="msg.status === 'error' && hasVisibleResultActions(msg)"
+                    class="result-action-bar result-action-bar-error"
+                  >
+                    <button
+                      v-for="action in getVisibleResultActions(msg)"
+                      :key="action.key"
+                      class="inline-session-btn"
+                      @click="action.onClick()"
+                      :disabled="action.disabled"
+                    >
+                      {{ action.label }}
+                    </button>
+                  </div>
+                  <div
+                    v-if="msg.status === 'error' && isResultRevisionActive(msg)"
+                    class="result-action-note"
+                  >
+                    已进入修改模式，请在下方输入修改意见。
                   </div>
 
                   <!-- 消息内容（包括 cancelled/pending/running/completed，只要有内容就显示） -->
@@ -210,16 +233,6 @@
                     <!-- 叙述生成中的占位 -->
                     <div v-else-if="msg.status === 'running' && isNarrativeStreaming(msg)" class="summary-section loading">
                       <span class="loading-text">正在生成分析...</span>
-                    </div>
-
-                    <div v-if="canRetryTableSelection(msg)" class="message-session-actions">
-                      <button
-                        class="inline-session-btn"
-                        @click="reopenTableSelectionForMessage(msg)"
-                        :disabled="Boolean(restartingQueryIds[msg.query_id])"
-                      >
-                        {{ restartingQueryIds[msg.query_id] ? '处理中...' : '不是这张表，重新选表' }}
-                      </button>
                     </div>
 
                     <!-- 以下内容在叙述完成后才显示 -->
@@ -324,6 +337,24 @@
                       </div>
                     </template>
 
+                    <div v-if="hasVisibleResultActions(msg)" class="result-action-bar">
+                      <button
+                        v-for="action in getVisibleResultActions(msg)"
+                        :key="action.key"
+                        class="inline-session-btn"
+                        @click="action.onClick()"
+                        :disabled="action.disabled"
+                      >
+                        {{ action.label }}
+                      </button>
+                    </div>
+                    <div
+                      v-if="isResultRevisionActive(msg)"
+                      class="result-action-note"
+                    >
+                      已进入修改模式，请在下方输入修改意见。
+                    </div>
+
                     <!-- 加载中状态（无思考步骤和叙述内容时才显示） -->
                     <div v-if="(msg.status === 'pending' || (msg.status === 'running' && !msg.result_summary && !isNarrativeStreaming(msg))) && !hasThinkingSteps(msg) && getThinkingSteps(msg.message_id).length === 0" class="loading-indicator">
                       <div class="typing-indicator">
@@ -355,15 +386,23 @@
                     <div class="user-question-text">{{ pendingQueryText }}</div>
                   </div>
 
-                  <div v-if="pendingSessionSummaryText" class="ai-understanding-section">
+                  <div v-if="pendingSessionSummaryItems.length" class="ai-understanding-section">
                     <p class="section-label">🤖 系统确认：</p>
                     <div class="understanding-content">
-                      <pre class="understanding-text">{{ pendingSessionSummaryText }}</pre>
+                      <ul class="understanding-list">
+                        <li
+                          v-for="(item, index) in pendingSessionSummaryItems"
+                          :key="`pending-summary-${index}`"
+                          class="understanding-item"
+                        >
+                          {{ item }}
+                        </li>
+                      </ul>
                     </div>
                   </div>
 
                   <div
-                    v-if="pendingSessionDomainHint || pendingSessionKnownConstraints.length"
+                    v-if="pendingSessionNode === 'table_resolution' && (pendingSessionDomainHint || pendingSessionKnownConstraints.length)"
                     class="session-context-section"
                   >
                     <div v-if="pendingSessionDomainHint" class="session-context-row">
@@ -387,7 +426,7 @@
                   </div>
 
                   <div
-                    v-if="pendingTableResolutionDraftPreview"
+                    v-if="pendingSessionNode === 'table_resolution' && pendingTableResolutionDraftPreview"
                     class="draft-preview-section"
                   >
                     <p class="section-label">🧭 暂定查询草稿：</p>
@@ -414,7 +453,7 @@
                       <span v-else-if="pendingTableSelection?.is_cross_year_query" class="cross-year-tip">
                         🗓️ 跨年度查询：您可以选择多个年份的数据表进行联合查询
                       </span>
-                      <span v-else>请选择要继续生成 IR 的数据表</span>
+                      <span v-else>请选择接下来要使用的数据表</span>
                     </div>
 
                     <div
@@ -485,57 +524,13 @@
 
                     <div class="table-selection-actions">
                       <button
-                        class="btn-confirm"
-                        @click="confirmTableSelection"
-                        :disabled="selectedTableIds.length === 0 || pendingSessionActionLoading"
+                        v-for="action in pendingSessionActionButtons"
+                        :key="action.key"
+                        :class="action.className"
+                        @click="action.onClick()"
+                        :disabled="action.disabled"
                       >
-                        ✓ 确认选择 ({{ selectedTableIds.length }}个表)
-                      </button>
-                      <button
-                        v-if="showAllAccessibleTables"
-                        class="btn-back-to-recommend"
-                        @click="backToRecommendTables"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        ← 返回推荐
-                      </button>
-                      <button
-                        v-else
-                        class="btn-secondary"
-                        @click="requestTableReselection"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        不是这张表
-                      </button>
-                      <button
-                        class="btn-secondary"
-                        @click="requestManualTableSelection"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        手动选表
-                      </button>
-                      <button
-                        v-if="canUsePendingAction('revise')"
-                        class="btn-secondary"
-                        @click="focusPendingReplyInput('请修改为：')"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        继续修改
-                      </button>
-                      <button
-                        v-if="canUsePendingAction('request_explanation')"
-                        class="btn-secondary"
-                        @click="requestPendingExplanation"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        解释一下
-                      </button>
-                      <button
-                        class="btn-cancel"
-                        @click="cancelPendingSession"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        取消
+                        {{ action.label }}
                       </button>
                     </div>
                   </template>
@@ -557,92 +552,27 @@
                     </div>
                     <div class="confirm-actions session-actions">
                       <button
-                        class="btn-confirm"
-                        @click="approveExecution"
-                        :disabled="pendingSessionActionLoading"
+                        v-for="action in pendingSessionActionButtons"
+                        :key="action.key"
+                        :class="action.className"
+                        @click="action.onClick()"
+                        :disabled="action.disabled"
                       >
-                        ✓ 确认执行
-                      </button>
-                      <button
-                        v-if="canUsePendingAction('change_table')"
-                        class="btn-secondary"
-                        @click="requestTableReselection"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        重新选表
-                      </button>
-                      <button
-                        v-if="canUsePendingAction('revise')"
-                        class="btn-secondary"
-                        @click="focusPendingReplyInput('请修改为：')"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        继续修改
-                      </button>
-                      <button
-                        v-if="canUsePendingAction('request_explanation')"
-                        class="btn-secondary"
-                        @click="requestPendingExplanation"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        解释一下
-                      </button>
-                      <button
-                        class="btn-cancel"
-                        @click="cancelPendingSession"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        取消查询
+                        {{ action.label }}
                       </button>
                     </div>
                   </template>
 
                   <template v-else-if="pendingSessionNode === 'draft_confirmation'">
-                    <div v-if="pendingRevisionNote" class="revision-note">
-                      <p class="section-label">📝 修改意见：</p>
-                      <div class="user-question-text">{{ pendingRevisionNote }}</div>
-                    </div>
-                    <div v-if="pendingConfirm?.warnings?.length" class="warnings-section">
-                      <p class="warnings-label">⚡ 提示：</p>
-                      <div v-for="(w, i) in pendingConfirm.warnings" :key="i" class="warning-tag">{{ w }}</div>
-                    </div>
                     <div class="confirm-actions session-actions">
                       <button
-                        class="btn-confirm"
-                        @click="confirmDraftRevision"
-                        :disabled="pendingSessionActionLoading"
+                        v-for="action in pendingSessionActionButtons"
+                        :key="action.key"
+                        :class="action.className"
+                        @click="action.onClick()"
+                        :disabled="action.disabled"
                       >
-                        ✓ 确认当前草稿
-                      </button>
-                      <button
-                        v-if="canUsePendingAction('revise')"
-                        class="btn-secondary"
-                        @click="focusPendingReplyInput('请修改为：')"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        继续修改
-                      </button>
-                      <button
-                        class="btn-secondary"
-                        @click="requestTableReselection"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        重新选表
-                      </button>
-                      <button
-                        v-if="canUsePendingAction('request_explanation')"
-                        class="btn-secondary"
-                        @click="requestPendingExplanation"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        解释一下
-                      </button>
-                      <button
-                        class="btn-cancel"
-                        @click="cancelPendingSession"
-                        :disabled="pendingSessionActionLoading"
-                      >
-                        取消
+                        {{ action.label }}
                       </button>
                     </div>
                   </template>
@@ -655,156 +585,6 @@
             </div>
           </div>
 
-          <!-- 旧确认卡回退 -->
-          <div v-if="hasLegacyPendingConfirmFallback" class="message-item assistant">
-            <div class="message-avatar">🤖</div>
-            <div class="message-content">
-              <div class="confirm-box">
-                <div class="confirm-header">
-                  <span class="confirm-icon">⚠️</span>
-                  <h3>请确认 AI 的理解</h3>
-                </div>
-                <div class="confirm-content">
-                  <div class="user-question-section">
-                    <p class="section-label">💬 您的问题：</p>
-                    <div class="user-question-text">{{ pendingQueryText }}</div>
-                  </div>
-                  <div class="ai-understanding-section">
-                    <p class="section-label">🤖 AI 理解为：</p>
-                    <div class="understanding-content">
-                      <pre class="understanding-text">{{ pendingConfirm.natural_language }}</pre>
-                    </div>
-                  </div>
-                  <div v-if="pendingConfirm.warnings?.length" class="warnings-section">
-                    <p class="warnings-label">⚡ 注意事项：</p>
-                    <div v-for="(w, i) in pendingConfirm.warnings" :key="i" class="warning-tag">{{ w }}</div>
-                  </div>
-                  <div v-if="pendingConfirm.suggestions?.length" class="suggestions-section">
-                    <p class="suggestions-label">💡 快速修改建议：</p>
-                    <div class="suggestions-list">
-                      <button
-                        v-for="(suggestion, i) in pendingConfirm.suggestions"
-                        :key="i"
-                        class="suggestion-btn"
-                        @click="applySuggestion(suggestion)"
-                        :title="suggestion.description"
-                      >{{ suggestion.label }}</button>
-                    </div>
-                  </div>
-                </div>
-                <div class="confirm-actions">
-                  <button class="btn-confirm" @click="confirmAndExecute">✓ 确认并执行</button>
-                  <button class="btn-cancel" @click="cancelPendingConfirm">✕ 重新输入</button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- 旧表选择卡回退 -->
-          <div v-if="hasLegacyPendingTableSelectionFallback" class="message-item assistant">
-            <div class="message-avatar">🤖</div>
-            <div class="message-content">
-              <div class="table-selection-box">
-                <div class="table-selection-header">
-                  <span class="table-selection-icon">📊</span>
-                  <h3>请选择数据表</h3>
-                  <div class="table-selection-header-actions">
-                    <!-- 未展开时显示分批导航和展开按钮 -->
-                    <template v-if="!showAllAccessibleTables">
-                      <button v-if="hasPrevBatch" class="btn-prev-batch" @click="prevTableBatch">← 上一批</button>
-                      <button v-if="hasNextBatch" class="btn-refresh-batch" @click="nextTableBatch">
-                        🔄 换一批 ({{ tableBatchIndex + 1 }}/{{ totalBatches }})
-                      </button>
-                      <button class="btn-expand-all" @click="expandAllTables" :disabled="loadingAllTables">
-                        {{ loadingAllTables ? '加载中...' : '📋 展开全部' }}
-                      </button>
-                    </template>
-                  </div>
-                </div>
-                <div class="table-selection-tip">
-                  <span v-if="showAllAccessibleTables">以下是您可访问的所有数据表，请选择要查询的表：</span>
-                  <span v-else-if="pendingTableSelection.is_cross_year_query" class="cross-year-tip">
-                    🗓️ 跨年度查询：您可以选择多个年份的数据表进行联合查询
-                  </span>
-                  <span v-else>AI 识别到多个可能的数据表，请选择您需要查询的表</span>
-                </div>
-                
-                <!-- 确认原因提示 -->
-                <div v-if="!showAllAccessibleTables && pendingTableSelection.confirmation_reason" class="confirmation-reason-hint">
-                  <span class="hint-icon">💡</span>
-                  <span class="hint-text">{{ pendingTableSelection.confirmation_reason }}</span>
-                </div>
-
-                <!-- 展开全部模式：搜索框 -->
-                <div v-if="showAllAccessibleTables" class="all-tables-search">
-                  <input
-                    v-model="allTablesSearchQuery"
-                    type="text"
-                    placeholder="搜索表名或描述..."
-                    class="search-input"
-                    @input="filterAllTables"
-                  />
-                  <span class="search-count">共 {{ filteredAllTables.length }} 张表</span>
-                </div>
-
-                <!-- LLM推荐模式 -->
-                <div v-if="!showAllAccessibleTables" class="table-candidates">
-                  <div
-                    v-for="candidate in visibleCandidates"
-                    :key="candidate.table_id"
-                    class="table-candidate"
-                    :class="{ selected: isTableSelected(candidate.table_id), 'is-year-table': candidate.data_year }"
-                    @click="toggleTableSelection(candidate)"
-                  >
-                    <div class="candidate-checkbox">
-                      <span v-if="isTableSelected(candidate.table_id)" class="checkbox-tick">✓</span>
-                    </div>
-                    <div class="candidate-info">
-                      <div class="candidate-name">{{ candidate.table_name }}</div>
-                      <div class="candidate-desc">{{ candidate.description }}</div>
-                      <div v-if="candidate.reason" class="candidate-reason">💡 {{ candidate.reason }}</div>
-                      <div v-if="candidate.data_year" class="candidate-year">📅 {{ candidate.data_year }}年度数据</div>
-                    </div>
-                    <div class="candidate-score">{{ Math.round((candidate.confidence || 0) * 100) }}%</div>
-                  </div>
-                </div>
-
-                <!-- 展开全部模式：所有可访问表 -->
-                <div v-else class="table-candidates all-tables-mode">
-                  <div
-                    v-for="table in filteredAllTables"
-                    :key="table.table_id"
-                    class="table-candidate"
-                    :class="{ selected: isTableSelected(table.table_id) }"
-                    @click="toggleTableSelectionById(table.table_id)"
-                  >
-                    <div class="candidate-checkbox">
-                      <span v-if="isTableSelected(table.table_id)">✓</span>
-                    </div>
-                    <div class="candidate-info">
-                      <div class="candidate-name">{{ table.table_name }}</div>
-                      <div class="candidate-desc">{{ table.description }}</div>
-                      <div v-if="table.data_year" class="candidate-year">📅 {{ table.data_year }}年度数据</div>
-                      <div v-if="table.domain_name" class="candidate-domain">📁 {{ table.domain_name }}</div>
-                    </div>
-                  </div>
-                  <div v-if="filteredAllTables.length === 0" class="no-tables-found">
-                    <span>未找到匹配的数据表</span>
-                  </div>
-                </div>
-
-                <div class="table-selection-actions">
-                  <button class="btn-confirm" @click="confirmTableSelection" :disabled="selectedTableIds.length === 0">
-                    ✓ 确认选择 ({{ selectedTableIds.length }}个表)
-                  </button>
-                  <button v-if="showAllAccessibleTables" class="btn-back-to-recommend" @click="backToRecommendTables">
-                    ← 返回推荐
-                  </button>
-                  <button class="btn-cancel" @click="cancelTableSelection">✕ 取消</button>
-                </div>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -826,13 +606,13 @@
               </option>
             </select>
             <div class="confirmation-mode-group" :class="{ disabled: preQueryConfirmationLocked }">
-              <span class="confirmation-mode-label">本次确认</span>
+              <span class="confirmation-mode-label">确认策略</span>
               <button
                 v-for="option in confirmationModeOptions"
                 :key="option.value"
                 type="button"
                 class="confirmation-mode-btn"
-                :class="{ active: queryConfirmationMode === option.value }"
+                :class="{ active: isConfirmationModeActive(option.value) }"
                 :disabled="preQueryConfirmationLocked"
                 :title="option.description"
                 @click="setQueryConfirmationMode(option.value)"
@@ -889,6 +669,10 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { conversationAPI, querySessionAPI } from '@/api'
+import { useQueryActionControls } from '@/composables/useQueryActionControls'
+import { usePendingSessionPresentation } from '@/composables/usePendingSessionPresentation'
+import { usePendingSessionViewModels } from '@/composables/usePendingSessionViewModels'
+import { useQuerySessionSnapshots } from '@/composables/useQuerySessionSnapshots'
 import request from '@/utils/request'
 import { tokenManager } from '@/utils/tokenManager'
 import MarkdownIt from 'markdown-it'
@@ -1073,12 +857,8 @@ const selectedDomain = ref('')
 const availableConnections = ref([])
 const availableDomains = ref([])
 const explainOnly = ref(false)
+const SYSTEM_DEFAULT_CONFIRMATION_MODE = 'always_confirm'
 const confirmationModeOptions = [
-  {
-    value: 'system',
-    label: '跟随系统',
-    description: '使用系统默认或当前会话的确认策略'
-  },
   {
     value: 'adaptive',
     label: '智能确认',
@@ -1090,7 +870,11 @@ const confirmationModeOptions = [
     description: '本次提问先进入确认，再继续生成或执行'
   }
 ]
-const queryConfirmationMode = ref('system')
+const queryConfirmationMode = ref(null)
+const confirmationModeLabelMap = {
+  adaptive: '智能确认',
+  always_confirm: '始终确认'
+}
 
 // WebSocket
 const wsRef = ref(null)
@@ -1101,7 +885,8 @@ const expandedRows = reactive({})
 const chartTypes = reactive({})  // message_id -> chart type
 const legendFirstClick = reactive({})  // message_id -> boolean (是否已首次点击图例)
 const legendSelected = reactive({})  // message_id -> { seriesName: boolean } (图例选中状态)
-const restartingQueryIds = reactive({})
+const resultActionLoadingIds = reactive({})
+const resultReplyContext = ref(null)
 const messagesContainer = ref(null)
 const inputTextarea = ref(null)
 
@@ -1125,7 +910,7 @@ const canSendMessage = computed(() => {
 })
 
 const interactionLocked = computed(() => {
-  return loading.value || pendingSessionActionLoading.value
+  return loading.value || pendingSessionActionLoading.value || Object.keys(resultActionLoadingIds).length > 0
 })
 
 const renderableMessages = computed(() => {
@@ -1139,96 +924,12 @@ const hasActivePendingSession = computed(() => {
     ['table_resolution', 'execution_guard', 'draft_confirmation'].includes(snapshot.current_node)
 })
 
-const hasLegacyPendingConfirmFallback = computed(() => {
-  return !pendingSessionSnapshot.value && Boolean(pendingConfirm.value)
-})
-
-const hasLegacyPendingTableSelectionFallback = computed(() => {
-  return !pendingSessionSnapshot.value && Boolean(pendingTableSelection.value)
-})
-
 const pendingSessionState = computed(() => {
   return pendingSessionSnapshot.value?.state || {}
 })
 
-const pendingConfirmationView = computed(() => {
-  return pendingSessionSnapshot.value?.confirmation_view || null
-})
-
 const pendingSessionNode = computed(() => {
   return pendingSessionSnapshot.value?.current_node || ''
-})
-
-const pendingSessionTitle = computed(() => {
-  if (pendingSessionNode.value === 'table_resolution') return '请确认要使用的数据表'
-  if (pendingSessionNode.value === 'execution_guard') return '请确认是否执行查询'
-  if (pendingSessionNode.value === 'draft_confirmation') return '请确认当前查询草稿'
-  return '请确认当前操作'
-})
-
-const pendingSessionNodeLabel = computed(() => {
-  if (pendingSessionNode.value === 'table_resolution') return '选表确认'
-  if (pendingSessionNode.value === 'execution_guard') return '执行确认'
-  if (pendingSessionNode.value === 'draft_confirmation') return '草稿确认'
-  return '确认中'
-})
-
-const pendingSessionIcon = computed(() => {
-  if (pendingSessionNode.value === 'table_resolution') return '📊'
-  if (pendingSessionNode.value === 'execution_guard') return '⚠️'
-  if (pendingSessionNode.value === 'draft_confirmation') return '📝'
-  return '🤖'
-})
-
-const pendingSessionSummaryText = computed(() => {
-  const safeSummary = pendingConfirmationView.value?.context?.safe_summary || {}
-  if (pendingSessionNode.value === 'table_resolution') {
-    if (pendingTableSelection.value?.manual_table_override || pendingSessionState.value.manual_table_override) {
-      return '已切换为手动选表，请重新确认要查询的数据表。'
-    }
-    const goalSummary = safeSummary.user_goal_summary && safeSummary.user_goal_summary !== pendingQueryText.value
-      ? `当前理解：${safeSummary.user_goal_summary}`
-      : ''
-    const reasonText = pendingTableSelection.value?.message ||
-      pendingTableSelection.value?.confirmation_reason ||
-      safeSummary.open_points?.[0] ||
-      '系统识别到多个候选表，需要您确认后再继续生成 IR。'
-    return [goalSummary, reasonText].filter(Boolean).join('\n\n')
-  }
-  if (pendingSessionNode.value === 'execution_guard') {
-    return pendingConfirm.value?.natural_language || '该查询可能扫描较大数据量，请确认是否继续执行。'
-  }
-  if (pendingSessionNode.value === 'draft_confirmation') {
-    return pendingConfirm.value?.natural_language || '系统已生成新的查询草稿，请确认是否继续。'
-  }
-  return ''
-})
-
-const pendingSessionDomainHint = computed(() => {
-  return pendingConfirmationView.value?.context?.safe_summary?.domain_hint || ''
-})
-
-const pendingSessionKnownConstraints = computed(() => {
-  const constraints = pendingConfirmationView.value?.context?.safe_summary?.known_constraints
-  return Array.isArray(constraints) ? constraints.filter(Boolean) : []
-})
-
-const pendingTableResolutionDraftPreview = computed(() => {
-  if (pendingSessionNode.value !== 'table_resolution') return null
-
-  const draft = pendingConfirmationView.value?.draft || null
-  if (!draft) return null
-
-  const naturalLanguage = draft.natural_language || ''
-  const warnings = Array.isArray(draft.warnings) ? draft.warnings.filter(Boolean) : []
-  if (!naturalLanguage && warnings.length === 0 && !draft.draft_json) {
-    return null
-  }
-
-  return {
-    natural_language: naturalLanguage || '系统已生成暂定草稿，确认选表后会继续细化。',
-    warnings
-  }
 })
 
 const pendingRevisionNote = computed(() => {
@@ -1243,7 +944,8 @@ const isAdmin = computed(() => {
 
 const inputPlaceholder = computed(() => {
   if (!isLoggedIn.value) return '请先登录后再提问...'
-  if (hasActivePendingSession.value) return '当前处于确认阶段，可直接回复“确认”“换表”“解释一下”等...'
+  if (hasActivePendingSession.value) return '当前处于确认阶段，可直接回复“确认”“改成…”“为什么这样理解”等...'
+  if (resultReplyContext.value?.queryId) return '请输入你希望修改的内容，按 Enter 提交到当前结果...'
   if (!currentConversationId.value) return '输入问题开始新对话，例如：2025年武昌区的成交宗数'
   return '输入追问内容，按 Enter 发送...'
 })
@@ -1252,10 +954,17 @@ const preQueryConfirmationLocked = computed(() => {
   return hasActivePendingSession.value || interactionLocked.value
 })
 
+const effectiveQueryConfirmationMode = computed(() => {
+  return queryConfirmationMode.value || SYSTEM_DEFAULT_CONFIRMATION_MODE
+})
+
 const inputHintText = computed(() => {
   const base = '按 Enter 发送，Shift + Enter 换行'
   if (hasActivePendingSession.value) {
     return `${base}；当前正在确认上一条查询`
+  }
+  if (resultReplyContext.value?.queryId) {
+    return `${base}；当前将作为上一条结果的修改意见提交`
   }
   if (queryConfirmationMode.value === 'adaptive') {
     return `${base}；本次使用智能确认`
@@ -1321,7 +1030,11 @@ async function resolveFollowupContextResolution(text) {
   }
 
   try {
-    const res = await conversationAPI.resolveFollowupContext(currentConversationId.value, { text })
+    const res = await conversationAPI.resolveFollowupContext(
+      currentConversationId.value,
+      { text },
+      { silentStatuses: [404] }
+    )
     return res.data || { resolution: 'resolved_to_new_query' }
   } catch (e) {
     console.warn('解析结果后追问上下文失败，已回退为独立新问题', e)
@@ -1338,31 +1051,92 @@ function setQueryConfirmationMode(mode) {
   queryConfirmationMode.value = mode
 }
 
+function isConfirmationModeActive(mode) {
+  return effectiveQueryConfirmationMode.value === mode
+}
+
 function consumeQueryConfirmationMode() {
-  const mode = queryConfirmationMode.value === 'system' ? null : queryConfirmationMode.value
-  queryConfirmationMode.value = 'system'
+  const mode = queryConfirmationMode.value
+  queryConfirmationMode.value = null
   return mode
 }
 
-function normalizeSessionSnapshot(payload) {
-  if (!payload) return null
-  if (payload.state) {
-    return {
-      ...payload,
-      confirmation_view: payload.confirmation_view || payload.session?.confirmation_view || null
+function getConfirmationModeLabel(mode) {
+  return confirmationModeLabelMap[mode] || ''
+}
+
+function getMessageConfirmationModeLabel(msg) {
+  return msg?.metadata?.confirmation_mode_label ||
+    getConfirmationModeLabel(msg?.metadata?.confirmation_mode)
+}
+
+function normalizeThinkingSteps(steps) {
+  if (!Array.isArray(steps)) return []
+  return steps
+    .filter(step => step?.step)
+    .map(step => ({
+      step: step.step,
+      content: step.content || '',
+      done: Boolean(step.done),
+      status: step.status || 'started'
+    }))
+}
+
+function hasPersistedThinkingSteps(msg) {
+  return normalizeThinkingSteps(msg?.metadata?.thinking_steps || msg?.thinking_steps).length > 0
+}
+
+function isLegacyBlankAssistantMessage(msg) {
+  return msg?.role === 'assistant' &&
+    ['completed', 'cancelled'].includes(msg?.status) &&
+    !msg?.content &&
+    !msg?.result_summary &&
+    !msg?.sql_text &&
+    !(msg?.result_data?.rows?.length > 0) &&
+    !msg?.error_message &&
+    !hasPersistedThinkingSteps(msg)
+}
+
+function hydrateConversationMessage(msg) {
+  let nextMessage = { ...msg }
+
+  if (nextMessage.result_data?.rows && nextMessage.result_data?.columns) {
+    const columns = nextMessage.result_data.columns
+    const rawRows = nextMessage.result_data.rows
+    if (rawRows.length > 0 && Array.isArray(rawRows[0])) {
+      const objectRows = rawRows.map(row => {
+        const obj = {}
+        columns.forEach((col, idx) => {
+          obj[col.name] = row[idx]
+        })
+        return obj
+      })
+      nextMessage = {
+        ...nextMessage,
+        result_data: {
+          ...nextMessage.result_data,
+          rows: objectRows
+        }
+      }
     }
   }
 
-  const state = payload.state_json || {}
-  return {
-    query_id: payload.query_id,
-    status: payload.status,
-    current_node: payload.current_node,
-    pending_actions: state.pending_actions || [],
-    confirmation_view: payload.confirmation_view || payload.session?.confirmation_view || null,
-    state,
-    session: payload.session || payload
+  const restoredThinkingSteps = normalizeThinkingSteps(
+    nextMessage.metadata?.thinking_steps || nextMessage.thinking_steps
+  )
+  if (restoredThinkingSteps.length > 0) {
+    thinkingSteps[nextMessage.message_id] = restoredThinkingSteps
+    thinkingExpanded[nextMessage.message_id] = false
   }
+
+  return {
+    ...nextMessage,
+    hidden: Boolean(nextMessage.metadata?.hidden) || isLegacyBlankAssistantMessage(nextMessage)
+  }
+}
+
+function clearResultReplyContext() {
+  resultReplyContext.value = null
 }
 
 function resetPendingTableUi() {
@@ -1377,226 +1151,13 @@ function clearPendingSessionState({ keepQueryText = false } = {}) {
   pendingSessionSnapshot.value = null
   pendingConfirm.value = null
   pendingTableSelection.value = null
+  clearResultReplyContext()
   selectedTableIds.value = []
   selectedTableId.value = null
   resetPendingTableUi()
   if (!keepQueryText) {
     pendingQueryText.value = ''
     originalQueryId.value = null
-  }
-}
-
-function getDefaultSelectedTableIds(card, state = {}, options = {}) {
-  const preserveSelection = options.preserveSelection === true
-  const rejectedTableIds = new Set(state.rejected_table_ids || [])
-
-  if (preserveSelection && selectedTableIds.value.length > 0) {
-    const preserved = selectedTableIds.value.filter(id => !rejectedTableIds.has(id))
-    if (preserved.length > 0) return preserved
-  }
-
-  const stateSelected = (state.selected_table_ids || []).filter(id => !rejectedTableIds.has(id))
-  if (stateSelected.length > 0) return stateSelected
-
-  const recommendedRaw = card?.recommended_table_ids || state.recommended_table_ids || []
-  const recommended = recommendedRaw.filter(id => !rejectedTableIds.has(id))
-  if (recommended.length > 0) {
-    return card?.allow_multi_select ? recommended : [recommended[0]]
-  }
-
-  const candidates = (card?.candidates || []).filter(candidate => !rejectedTableIds.has(candidate.table_id))
-  if (card?.is_cross_year_query && card?.allow_multi_select) {
-    const yearTables = candidates
-      .filter(candidate => candidate.data_year)
-      .map(candidate => candidate.table_id)
-    if (yearTables.length > 0) return yearTables
-  }
-
-  return candidates[0] ? [candidates[0].table_id] : []
-}
-
-function getSnapshotSelectedTableIds(snapshot = pendingSessionSnapshot.value) {
-  const normalized = normalizeSessionSnapshot(snapshot)
-  if (!normalized) return []
-
-  const confirmationView = normalized.confirmation_view || {}
-  const selectedFromMeta = confirmationView.dependency_meta?.selected_table_ids
-  if (Array.isArray(selectedFromMeta) && selectedFromMeta.length > 0) {
-    return selectedFromMeta
-  }
-
-  const selectedFromTable = confirmationView.table_resolution?.selected_table_ids
-  if (Array.isArray(selectedFromTable) && selectedFromTable.length > 0) {
-    return selectedFromTable
-  }
-
-  return normalized.state?.selected_table_ids || []
-}
-
-function isManualTableOverride(snapshot = pendingSessionSnapshot.value) {
-  const normalized = normalizeSessionSnapshot(snapshot)
-  if (!normalized) return false
-
-  const fromView = normalized.confirmation_view?.table_resolution?.manual_table_override
-  if (fromView !== undefined && fromView !== null) {
-    return Boolean(fromView)
-  }
-  return Boolean(normalized.state?.manual_table_override)
-}
-
-function buildPendingTableSelectionCard(snapshot, fallbackCard = null) {
-  const normalized = normalizeSessionSnapshot(snapshot)
-  if (!normalized) return fallbackCard
-
-  const tableResolution = normalized.confirmation_view?.table_resolution || null
-  if (tableResolution) {
-    return {
-      question: tableResolution.question || normalized.state?.question_text || '',
-      message: tableResolution.message || '',
-      confirmation_reason: tableResolution.reason_summary || '',
-      candidates: tableResolution.candidates || [],
-      recommended_table_ids: tableResolution.recommended_table_ids || [],
-      selected_table_ids: tableResolution.selected_table_ids || getSnapshotSelectedTableIds(normalized),
-      rejected_table_ids: tableResolution.rejected_table_ids || normalized.state?.rejected_table_ids || [],
-      allow_multi_select: tableResolution.allow_multi_select ?? false,
-      multi_table_mode: tableResolution.multi_table_mode || normalized.state?.multi_table_mode || null,
-      manual_table_override: isManualTableOverride(normalized)
-    }
-  }
-  if (!fallbackCard) return null
-
-  return {
-    ...fallbackCard,
-    question: fallbackCard.question || normalized.state?.question_text || '',
-    message: fallbackCard.message || '',
-    confirmation_reason: fallbackCard.confirmation_reason || '',
-    candidates: fallbackCard.candidates || [],
-    recommended_table_ids: fallbackCard.recommended_table_ids || normalized.state?.recommended_table_ids || [],
-    selected_table_ids: fallbackCard.selected_table_ids || getSnapshotSelectedTableIds(normalized),
-    rejected_table_ids: fallbackCard.rejected_table_ids || normalized.state?.rejected_table_ids || [],
-    allow_multi_select: fallbackCard.allow_multi_select ?? false,
-    multi_table_mode: fallbackCard.multi_table_mode || normalized.state?.multi_table_mode || null,
-    manual_table_override: isManualTableOverride(normalized)
-  }
-}
-
-function buildPendingConfirmCard(snapshot, currentNode, fallbackCard = null) {
-  const normalized = normalizeSessionSnapshot(snapshot)
-  if (!normalized) return fallbackCard
-
-  const viewCard = currentNode === 'execution_guard'
-    ? normalized.confirmation_view?.execution_guard
-    : normalized.confirmation_view?.draft
-
-  if (viewCard) {
-    return {
-      natural_language: viewCard.natural_language || '',
-      warnings: viewCard.warnings || [],
-      suggestions: viewCard.suggestions || [],
-      estimated_cost: viewCard.estimated_cost || null,
-      ir: viewCard.draft_json || viewCard.ir || null
-    }
-  }
-  if (!fallbackCard) return null
-
-  return {
-    ...fallbackCard,
-    natural_language: fallbackCard.natural_language || '',
-    warnings: fallbackCard.warnings || [],
-    suggestions: fallbackCard.suggestions || [],
-    estimated_cost: fallbackCard.estimated_cost || null,
-    ir: fallbackCard.ir || null
-  }
-}
-
-function applyPendingSessionSnapshot(payload, options = {}) {
-  const snapshot = normalizeSessionSnapshot(payload)
-  if (!snapshot) {
-    clearPendingSessionState()
-    return null
-  }
-
-  pendingSessionSnapshot.value = snapshot
-  pendingQueryText.value = snapshot.confirmation_view?.context?.question_text ||
-    snapshot.state?.question_text ||
-    pendingQueryText.value
-  originalQueryId.value = snapshot.query_id || originalQueryId.value
-
-  if (snapshot.current_node === 'table_resolution') {
-    const card = buildPendingTableSelectionCard(snapshot, options.fallbackTableSelection)
-    pendingTableSelection.value = card
-    pendingConfirm.value = null
-    const nextSelectedTableIds = getDefaultSelectedTableIds(card, snapshot.state || {}, options)
-    selectedTableIds.value = nextSelectedTableIds
-    selectedTableId.value = nextSelectedTableIds[0] || null
-    if (!options.preserveBatch) {
-      tableBatchIndex.value = 0
-    }
-  } else if (snapshot.current_node === 'execution_guard') {
-    pendingConfirm.value = buildPendingConfirmCard(snapshot, 'execution_guard', options.fallbackConfirmation)
-    pendingTableSelection.value = null
-    const stateSelected = getSnapshotSelectedTableIds(snapshot)
-    selectedTableIds.value = stateSelected
-    selectedTableId.value = stateSelected[0] || null
-    resetPendingTableUi()
-  } else if (snapshot.current_node === 'draft_confirmation') {
-    pendingConfirm.value = buildPendingConfirmCard(snapshot, 'draft_confirmation', options.fallbackConfirmation)
-    pendingTableSelection.value = buildPendingTableSelectionCard(snapshot, options.fallbackTableSelection)
-    const nextSelectedTableIds = getDefaultSelectedTableIds(pendingTableSelection.value, snapshot.state || {}, options)
-    selectedTableIds.value = nextSelectedTableIds
-    selectedTableId.value = nextSelectedTableIds[0] || null
-  } else {
-    pendingConfirm.value = null
-    pendingTableSelection.value = null
-    resetPendingTableUi()
-  }
-
-  return snapshot
-}
-
-async function loadQuerySessionSnapshot(
-  queryId,
-  {
-    fallbackConfirmation = null,
-    fallbackTableSelection = null,
-    preserveSelection = false
-  } = {}
-) {
-  if (!queryId) return null
-
-  try {
-    const res = await querySessionAPI.get(queryId)
-    const snapshot = applyPendingSessionSnapshot(res.data, {
-      fallbackConfirmation,
-      fallbackTableSelection,
-      preserveSelection
-    })
-
-    if (snapshot?.current_node === 'table_resolution' && isManualTableOverride(snapshot)) {
-      await expandAllTables()
-    }
-    return snapshot
-  } catch (e) {
-    console.warn('加载查询会话失败', e)
-    pendingSessionSnapshot.value = null
-    originalQueryId.value = queryId
-
-    if (fallbackTableSelection) {
-      pendingTableSelection.value = fallbackTableSelection
-      pendingConfirm.value = null
-      const fallbackSelected = getDefaultSelectedTableIds(fallbackTableSelection, {})
-      selectedTableIds.value = fallbackSelected
-      selectedTableId.value = fallbackSelected[0] || null
-      tableBatchIndex.value = 0
-    }
-
-    if (fallbackConfirmation) {
-      pendingConfirm.value = fallbackConfirmation
-      pendingTableSelection.value = null
-      resetPendingTableUi()
-    }
-
-    return null
   }
 }
 
@@ -1607,8 +1168,8 @@ function hideAssistantPlaceholder(messageId) {
   msg.status = 'completed'
 }
 
-function createAssistantPlaceholder() {
-  const assistantMessageId = 'temp-assistant-' + Date.now()
+function createAssistantPlaceholder(messageId = null) {
+  const assistantMessageId = messageId || ('temp-assistant-' + Date.now())
   const assistantMessage = {
     message_id: assistantMessageId,
     conversation_id: currentConversationId.value,
@@ -1619,6 +1180,31 @@ function createAssistantPlaceholder() {
   }
   messages.value.push(assistantMessage)
   return assistantMessageId
+}
+
+function reuseOrCreateAssistantMessage(queryId) {
+  const snapshotMessageId = pendingSessionSnapshot.value?.message_id ||
+    pendingSessionSnapshot.value?.session?.message_id ||
+    getResultSessionSnapshot(queryId)?.message_id ||
+    null
+
+  if (snapshotMessageId) {
+    const existingMsg = findMessage(snapshotMessageId)
+    if (existingMsg) {
+      existingMsg.hidden = false
+      existingMsg.status = 'pending'
+      existingMsg.content = ''
+      existingMsg.sql_text = null
+      existingMsg.result_summary = ''
+      existingMsg.result_data = null
+      existingMsg.error_message = null
+      existingMsg.is_stopping = false
+      return snapshotMessageId
+    }
+    return createAssistantPlaceholder(snapshotMessageId)
+  }
+
+  return createAssistantPlaceholder()
 }
 
 function prepareAssistantPlaceholder(assistantMessageId, progressText = '思考中...') {
@@ -1652,50 +1238,93 @@ function formatEstimatedRows(rows) {
 }
 
 function canUsePendingAction(actionType) {
-  return (pendingSessionSnapshot.value?.pending_actions || []).includes(actionType)
+  return (pendingSessionSnapshot.value?.confirmation_view?.pending_actions || []).includes(actionType)
 }
 
-function buildPendingExplanation(snapshot = pendingSessionSnapshot.value) {
-  const currentSnapshot = normalizeSessionSnapshot(snapshot)
-  if (!currentSnapshot) return '当前没有可解释的确认步骤。'
-
-  if (currentSnapshot.current_node === 'table_resolution') {
-    const tableResolution = currentSnapshot.confirmation_view?.table_resolution || null
-    const reason = tableResolution?.reason_summary || '当前命中了多个候选表，需要先确认目标表。'
-    const candidateReasons = (tableResolution?.candidates || [])
-      .slice(0, 3)
-      .map(candidate => `- ${candidate.table_name}: ${candidate.reason || '语义相近候选表'}`)
-      .join('\n')
-
-    return [
-      `当前处于选表确认阶段。`,
-      `原因：${reason}`,
-      candidateReasons ? `候选表依据：\n${candidateReasons}` : ''
-    ].filter(Boolean).join('\n\n')
-  }
-
-  if (currentSnapshot.current_node === 'execution_guard') {
-    const guard = currentSnapshot.confirmation_view?.execution_guard || null
-    const warnings = (guard?.warnings || []).map(item => `- ${item}`).join('\n')
-    const estimatedRows = guard?.estimated_cost?.rows
-
-    return [
-      '当前处于执行确认阶段。',
-      estimatedRows !== undefined ? `预计扫描行数：${formatEstimatedRows(estimatedRows)}` : '',
-      warnings ? `风险提示：\n${warnings}` : ''
-    ].filter(Boolean).join('\n\n')
-  }
-
-  if (currentSnapshot.current_node === 'draft_confirmation') {
-    const draft = currentSnapshot.confirmation_view?.draft || null
-    return [
-      draft?.natural_language || pendingConfirm.value?.natural_language || '',
-      pendingRevisionNote.value ? `当前已记录修改意见：${pendingRevisionNote.value}` : ''
-    ].filter(Boolean).join('\n\n') || '当前处于草稿确认阶段，请确认是否继续。'
-  }
-
-  return '当前确认原因已记录。'
+function getPendingActionBinding(semanticAction) {
+  return pendingSessionSnapshot.value?.confirmation_view?.dependency_meta?.action_bindings?.[semanticAction] || semanticAction
 }
+
+function isResultActionBusy(msg) {
+  return Boolean(msg?.query_id && resultActionLoadingIds[msg.query_id])
+}
+
+function isResultRevisionActive(msg) {
+  return Boolean(msg?.query_id && resultReplyContext.value?.queryId === msg.query_id)
+}
+
+const {
+  normalizeSessionSnapshot,
+  cacheResultSessionSnapshot,
+  getResultSessionSnapshot,
+  canUseResultAction,
+  getResultActionBinding,
+  loadResultSessionSnapshot,
+  hydrateResultActionContracts,
+} = useQuerySessionSnapshots({ messages })
+
+const {
+  applyPendingSessionSnapshot,
+  loadQuerySessionSnapshot,
+  buildPendingExplanation,
+  isManualTableOverride,
+} = usePendingSessionViewModels({
+  pendingSessionSnapshot,
+  pendingConfirm,
+  pendingTableSelection,
+  pendingQueryText,
+  originalQueryId,
+  selectedTableIds,
+  selectedTableId,
+  tableBatchIndex,
+  pendingRevisionNote,
+  normalizeSessionSnapshot,
+  cacheResultSessionSnapshot,
+  clearPendingSessionState,
+  resetPendingTableUi,
+  formatEstimatedRows,
+  expandAllTables,
+})
+
+const {
+  pendingSessionTitle,
+  pendingSessionNodeLabel,
+  pendingSessionIcon,
+  pendingSessionSummaryItems,
+  pendingSessionSummaryText,
+  pendingSessionDomainHint,
+  pendingSessionKnownConstraints,
+  pendingTableResolutionDraftPreview,
+} = usePendingSessionPresentation({
+  pendingSessionSnapshot,
+  pendingSessionState,
+  pendingSessionNode,
+  pendingTableSelection,
+  pendingQueryText,
+})
+
+const { pendingSessionActionButtons, getVisibleResultActions, hasVisibleResultActions } = useQueryActionControls({
+  pendingSessionNode,
+  pendingSessionActionLoading,
+  selectedTableIds,
+  showAllAccessibleTables,
+  canUsePendingAction,
+  confirmTableSelection,
+  requestTableReselection,
+  backToRecommendTables,
+  requestManualTableSelection,
+  focusPendingReplyInput,
+  requestPendingExplanation,
+  cancelPendingSession,
+  approveExecution,
+  confirmDraftRevision,
+  canUseResultAction,
+  isResultRevisionActive,
+  isResultActionBusy,
+  reopenTableSelectionForMessage,
+  startResultRevision,
+  requestResultExplanation,
+})
 
 // 加载数据库连接列表
 async function loadConnections() {
@@ -1760,41 +1389,26 @@ async function selectConversation(conversationId) {
   if (currentConversationId.value === conversationId) return
   
   clearPendingSessionState()
+  Object.keys(thinkingSteps).forEach(key => delete thinkingSteps[key])
+  Object.keys(thinkingExpanded).forEach(key => delete thinkingExpanded[key])
   currentConversationId.value = conversationId
   messagesLoading.value = true
   
   try {
     const res = await conversationAPI.get(conversationId, { include_result_data: true })
     currentConversation.value = res.data?.conversation || null
-    
-    // 处理消息数据，确保 result_data.rows 是对象数组格式
+
     const rawMessages = res.data?.messages || []
-    messages.value = rawMessages.map(msg => {
-      if (msg.result_data?.rows && msg.result_data?.columns) {
-        const columns = msg.result_data.columns
-        const rawRows = msg.result_data.rows
-        
-        // 检查是否需要转换（如果第一行是数组则需要转换）
-        if (rawRows.length > 0 && Array.isArray(rawRows[0])) {
-          // 将二维数组转换为对象数组
-          const objectRows = rawRows.map(row => {
-            const obj = {}
-            columns.forEach((col, idx) => {
-              obj[col.name] = row[idx]
-            })
-            return obj
-          })
-          return {
-            ...msg,
-            result_data: {
-              ...msg.result_data,
-              rows: objectRows
-            }
-          }
-        }
+    messages.value = rawMessages.map(hydrateConversationMessage)
+    void hydrateResultActionContracts(messages.value)
+
+    const activeQuerySession = res.data?.active_query_session || null
+    if (activeQuerySession) {
+      const snapshot = applyPendingSessionSnapshot(activeQuerySession, { preserveSelection: true })
+      if (snapshot?.current_node === 'table_resolution' && isManualTableOverride(snapshot)) {
+        await expandAllTables()
       }
-      return msg
-    })
+    }
     
     // 如果会话有指定连接，自动选择
     if (currentConversation.value?.connection_id) {
@@ -1865,6 +1479,8 @@ async function handleSendMessage() {
   
   const text = queryText.value.trim()
   if (!text) return
+  const isFreshQuery = !hasActivePendingSession.value && !resultReplyContext.value?.queryId
+  const confirmationModeForDisplay = isFreshQuery ? effectiveQueryConfirmationMode.value : null
   
   // 如果没有当前会话，先创建一个
   if (!currentConversationId.value) {
@@ -1890,6 +1506,10 @@ async function handleSendMessage() {
     role: 'user',
     content: text,
     status: 'completed',
+    metadata: confirmationModeForDisplay ? {
+      confirmation_mode: confirmationModeForDisplay,
+      confirmation_mode_label: getConfirmationModeLabel(confirmationModeForDisplay)
+    } : null,
     created_at: new Date().toISOString()
   }
   messages.value.push(userMessage)
@@ -1903,6 +1523,11 @@ async function handleSendMessage() {
 
   if (hasActivePendingSession.value) {
     await handlePendingSessionReply(text)
+    return
+  }
+
+  if (resultReplyContext.value?.queryId) {
+    await submitResultRevisionReply(text)
     return
   }
 
@@ -2036,23 +1661,34 @@ async function handleWebSocketMessage(data, assistantMessageId) {
       updateAssistantMessage(assistantMessageId, { status: 'running' })
       // 更新进度步骤
       updateProgressStep(payload.step, payload.status || 'running', payload.description)
+      if (payload.step === 'table_selection') {
+        const currentMsg = findMessage(assistantMessageId)
+        if (currentMsg?.query_id) {
+          void loadResultSessionSnapshot(currentMsg.query_id, { force: true })
+        }
+      }
       break
     
     case 'thinking':
       // 思考过程流式输出（类似 Deep Research 效果）
       updateThinkingStep(assistantMessageId, payload.step, payload.content, payload.done, payload.step_status)
       updateAssistantMessage(assistantMessageId, { status: 'running' })
+      if (payload.step === 'table_selection') {
+        const currentMsg = findMessage(assistantMessageId)
+        if (currentMsg?.query_id) {
+          void loadResultSessionSnapshot(currentMsg.query_id, { force: true })
+        }
+      }
       break
       
     case 'confirm':
       // 需要确认
       hideAssistantPlaceholder(assistantMessageId)
-      pendingConfirm.value = payload.confirmation
       pendingQueryText.value = queryText.value || payload.query_text || ''
       originalQueryId.value = data.query_id || currentQueryId.value || null
-      await loadQuerySessionSnapshot(originalQueryId.value, {
-        fallbackConfirmation: payload.confirmation
-      })
+      if (!(await loadQuerySessionSnapshot(originalQueryId.value))) {
+        appendAssistantInfoMessage('确认阶段状态加载失败，请重试。')
+      }
       loading.value = false
       progressSteps.value = []
       break
@@ -2060,25 +1696,12 @@ async function handleWebSocketMessage(data, assistantMessageId) {
     case 'table_selection':
       // 表选择
       hideAssistantPlaceholder(assistantMessageId)
-      pendingTableSelection.value = payload.table_selection
       originalQueryId.value = data.query_id || null
       // 保存原始查询文本，确认时需要用
       pendingQueryText.value = payload.query_text || queryText.value || ''
-      // 初始化选中状态
-      const firstCandidate = payload.table_selection?.candidates?.[0]
-      if (payload.table_selection?.is_cross_year_query && payload.table_selection?.allow_multi_select) {
-        const yearTables = (payload.table_selection?.candidates || [])
-          .filter(c => c.data_year)
-          .map(c => c.table_id)
-        selectedTableIds.value = yearTables.length > 0 ? yearTables : (firstCandidate ? [firstCandidate.table_id] : [])
-      } else {
-        selectedTableIds.value = firstCandidate ? [firstCandidate.table_id] : []
+      if (!(await loadQuerySessionSnapshot(originalQueryId.value))) {
+        appendAssistantInfoMessage('选表阶段状态加载失败，请重试。')
       }
-      selectedTableId.value = selectedTableIds.value[0] || null
-      tableBatchIndex.value = 0
-      await loadQuerySessionSnapshot(originalQueryId.value, {
-        fallbackTableSelection: payload.table_selection
-      })
       loading.value = false
       progressSteps.value = []
       break
@@ -2176,6 +1799,10 @@ async function handleWebSocketMessage(data, assistantMessageId) {
           status: 'error',
           error_message: payload.error?.message || payload.error?.details || '查询执行失败'
         })
+        const currentMsg = findMessage(assistantMessageId)
+        if (currentMsg?.query_id) {
+          void loadResultSessionSnapshot(currentMsg.query_id, { force: true })
+        }
         // 保存思考步骤到消息
         saveThinkingToMessage(assistantMessageId)
         scrollToBottom()
@@ -2209,6 +1836,10 @@ async function handleWebSocketMessage(data, assistantMessageId) {
             meta: payload.result.meta
           } : currentMsg?.result_data
         })
+        const completedMsg = findMessage(assistantMessageId)
+        if (completedMsg?.query_id) {
+          void loadResultSessionSnapshot(completedMsg.query_id, { force: true })
+        }
       } else {
         // 没有新结果，只更新状态
         const currentMsg = findMessage(assistantMessageId)
@@ -2217,6 +1848,9 @@ async function handleWebSocketMessage(data, assistantMessageId) {
           // 如果有叙述缓冲，更新摘要
           if (narrativeBuffer.value && !currentMsg.result_summary) {
             currentMsg.result_summary = narrativeBuffer.value
+          }
+          if (currentMsg.query_id) {
+            void loadResultSessionSnapshot(currentMsg.query_id, { force: true })
           }
         }
       }
@@ -2251,6 +1885,10 @@ async function handleWebSocketMessage(data, assistantMessageId) {
         status: 'error',
         error_message: payload.error?.message || '查询失败'
       })
+      const errorMsg = findMessage(assistantMessageId)
+      if (errorMsg?.query_id) {
+        void loadResultSessionSnapshot(errorMsg.query_id, { force: true })
+      }
       loading.value = false
       narrativeStreaming.value = false
       progressSteps.value = []
@@ -2305,7 +1943,7 @@ async function continueQueryFromPendingState({
     return
   }
 
-  const assistantMessageId = createAssistantPlaceholder()
+  const assistantMessageId = reuseOrCreateAssistantMessage(queryId)
   prepareAssistantPlaceholder(assistantMessageId, progressText)
   clearPendingSessionState({ keepQueryText: true })
   await executeQueryViaWebSocket(text, assistantMessageId, {
@@ -2339,6 +1977,7 @@ async function startFreshQueryFromPendingReply(text) {
 }
 
 async function submitPendingSessionAction({
+  semanticAction = null,
   actionType = null,
   payload = {},
   naturalLanguageReply = null,
@@ -2352,65 +1991,21 @@ async function submitPendingSessionAction({
 
   pendingSessionActionLoading.value = true
   try {
+    const resolvedActionType = semanticAction ? getPendingActionBinding(semanticAction) : actionType
     const res = await querySessionAPI.submitAction(queryId, {
-      action_type: actionType,
+      action_type: resolvedActionType,
       payload,
       natural_language_reply: naturalLanguageReply,
       draft_version: pendingSessionState.value.draft_version || 1,
       actor_type: 'user',
       actor_id: currentUser.value?.user_id || 'anonymous',
-      idempotency_key: buildIdempotencyKey(actionType || 'reply')
+      idempotency_key: buildIdempotencyKey(resolvedActionType || semanticAction || 'reply')
     })
 
-    const result = res.data
-    if (result?.resolution === 'need_clarification') {
-      appendAssistantInfoMessage(result.message)
-      return result
-    }
-
-    if (result?.resolution === 'resolved_to_new_query') {
-      const nextQueryText = result.new_query_text || naturalLanguageReply
-      if (nextQueryText) {
-        await startFreshQueryFromPendingReply(nextQueryText)
-      }
-      return result
-    }
-
-    const snapshot = applyPendingSessionSnapshot(result?.session, { preserveSelection })
-    const currentState = snapshot?.state || {}
-
-    if (result?.resume_directive?.should_resume) {
-      await continueQueryFromResumeDirective(result.resume_directive)
-      return result
-    }
-
-    if (result?.action?.action_type === 'change_table') {
-      if (isManualTableOverride(snapshot)) {
-        await expandAllTables()
-      } else if (visibleCandidates.value.length === 0) {
-        await expandAllTables()
-      }
-      return result
-    }
-
-    if (result?.action?.action_type === 'request_explanation') {
-      appendAssistantInfoMessage(buildPendingExplanation(snapshot))
-      return result
-    }
-
-    if (result?.action?.action_type === 'revise') {
-      appendAssistantInfoMessage('修改意见已记录，请继续确认。')
-      return result
-    }
-
-    if (result?.action?.action_type === 'exit_current') {
-      const cancelReason = snapshot?.state?.cancel_reason || '已取消当前查询。'
-      clearPendingSessionState()
-      appendAssistantInfoMessage(cancelReason)
-      return result
-    }
-
-    return result
+    return await handleSessionActionResult(res.data, {
+      preserveSelection,
+      naturalLanguageReply
+    })
   } catch (e) {
     console.error('提交确认动作失败', e)
     ElMessage.error(e.response?.data?.detail || e.message || '提交确认动作失败')
@@ -2427,6 +2022,141 @@ async function handlePendingSessionReply(text) {
   })
 }
 
+async function handleSessionActionResult(result, {
+  preserveSelection = false,
+  naturalLanguageReply = null
+} = {}) {
+  if (result?.resolution === 'need_clarification') {
+    appendAssistantInfoMessage(result.message)
+    return result
+  }
+
+  if (result?.resolution === 'resolved_to_new_query') {
+    const nextQueryText = result.new_query_text || naturalLanguageReply
+    if (nextQueryText) {
+      await startFreshQueryFromPendingReply(nextQueryText)
+    }
+    return result
+  }
+
+  if (result?.action?.action_type) {
+    clearResultReplyContext()
+  }
+
+  const sessionSnapshot = cacheResultSessionSnapshot(result?.session)
+  const snapshot = applyPendingSessionSnapshot(sessionSnapshot || result?.session, { preserveSelection })
+
+  if (result?.resume_directive?.should_resume) {
+    await continueQueryFromResumeDirective(result.resume_directive)
+    return result
+  }
+
+  if (result?.action?.action_type === 'change_table') {
+    if (isManualTableOverride(snapshot)) {
+      await expandAllTables()
+    } else if (visibleCandidates.value.length === 0) {
+      await expandAllTables()
+    }
+    return result
+  }
+
+  if (result?.action?.action_type === 'request_explanation') {
+    appendAssistantInfoMessage(buildPendingExplanation(snapshot))
+    return result
+  }
+
+  if (result?.action?.action_type === 'revise') {
+    appendAssistantInfoMessage('修改意见已记录，请继续确认。')
+    return result
+  }
+
+  if (result?.action?.action_type === 'exit_current') {
+    const cancelReason = snapshot?.state?.cancel_reason || '已取消当前查询。'
+    clearPendingSessionState()
+    appendAssistantInfoMessage(cancelReason)
+    return result
+  }
+
+  return result
+}
+
+async function submitResultSessionAction(msg, {
+  semanticAction,
+  payload = {},
+  preserveSelection = false,
+  idempotencyPrefix = 'result-action'
+} = {}) {
+  if (!msg?.query_id) {
+    ElMessage.error('未找到结果对应的查询会话。')
+    return null
+  }
+
+  await loadResultSessionSnapshot(msg.query_id)
+  if (!canUseResultAction(msg, semanticAction)) {
+    ElMessage.error('当前结果不支持该动作。')
+    return null
+  }
+
+  resultActionLoadingIds[msg.query_id] = true
+  try {
+    const actionType = getResultActionBinding(msg, semanticAction) || semanticAction
+    const res = await querySessionAPI.submitAction(msg.query_id, {
+      action_type: actionType,
+      payload,
+      draft_version: getResultSessionSnapshot(msg.query_id)?.state?.draft_version || 1,
+      actor_type: 'user',
+      actor_id: currentUser.value?.user_id || 'anonymous',
+      idempotency_key: buildIdempotencyKey(idempotencyPrefix)
+    })
+
+    return await handleSessionActionResult(res.data, { preserveSelection })
+  } catch (e) {
+    console.error('提交结果态动作失败', e)
+    ElMessage.error(e.response?.data?.detail || e.message || '提交结果态动作失败')
+    return null
+  } finally {
+    delete resultActionLoadingIds[msg.query_id]
+  }
+}
+
+function startResultRevision(msg) {
+  if (!msg?.query_id || !canUseResultAction(msg, 'revise')) return
+  resultReplyContext.value = {
+    queryId: msg.query_id,
+    messageId: msg.message_id,
+  }
+  focusPendingReplyInput('请修改为：')
+}
+
+async function submitResultRevisionReply(text) {
+  const queryId = resultReplyContext.value?.queryId
+  if (!queryId) return null
+
+  const result = await submitResultSessionAction(
+    { query_id: queryId },
+    {
+      semanticAction: 'revise',
+      payload: { text },
+      preserveSelection: true,
+      idempotencyPrefix: 'result-revise'
+    }
+  )
+
+  if (result) {
+    clearResultReplyContext()
+  }
+  return result
+}
+
+async function requestResultExplanation(msg) {
+  await submitResultSessionAction(msg, {
+    semanticAction: 'request_explanation',
+    payload: { source: 'result_action_bar' },
+    preserveSelection: true,
+    idempotencyPrefix: 'result-explanation'
+  })
+}
+
 async function requestTableReselection() {
   await submitPendingSessionAction({
     actionType: 'change_table',
@@ -2437,7 +2167,7 @@ async function requestTableReselection() {
 
 async function requestManualTableSelection() {
   await submitPendingSessionAction({
-    actionType: 'change_table',
+    semanticAction: 'manual_select_table',
     payload: { mode: 'manual_select', reason: '用户点击手动选表' },
     preserveSelection: false
   })
@@ -2453,7 +2183,7 @@ async function requestPendingExplanation() {
 
 async function approveExecution() {
   await submitPendingSessionAction({
-    actionType: 'execution_decision',
+    semanticAction: 'approve_execution',
     payload: { decision: 'approve' },
     preserveSelection: true
   })
@@ -2461,7 +2191,7 @@ async function approveExecution() {
 
 async function confirmDraftRevision() {
   await submitPendingSessionAction({
-    actionType: 'confirm',
+    semanticAction: 'confirm_draft',
     payload: {
       selected_table_ids: selectedTableIds.value,
       multi_table_mode: pendingTableSelection.value?.multi_table_mode || null
@@ -2473,7 +2203,7 @@ async function confirmDraftRevision() {
 async function cancelPendingSession() {
   if (hasActivePendingSession.value) {
     await submitPendingSessionAction({
-      actionType: 'exit_current',
+      semanticAction: 'cancel_query',
       payload: { mode: 'cancel', source_text: '用户取消当前查询' },
       preserveSelection: true
     })
@@ -2712,56 +2442,6 @@ function describeProgressStatus(status) {
   return statusMap[status] || status
 }
 
-// ==================== 确认卡相关方法 ====================
-async function confirmAndExecute() {
-  if (hasActivePendingSession.value) {
-    await approveExecution()
-    return
-  }
-
-  const text = pendingQueryText.value
-  const queryId = originalQueryId.value
-  pendingConfirm.value = null
-  pendingQueryText.value = ''
-  if (text && queryId) {
-    await continueQueryFromPendingState({
-      text,
-      queryId,
-      selectedTableIds: selectedTableIds.value,
-      forceExecute: true,
-      progressText: '正在继续执行查询...'
-    })
-  }
-}
-
-async function cancelPendingConfirm() {
-  if (hasActivePendingSession.value) {
-    await cancelPendingSession()
-    return
-  }
-
-  pendingConfirm.value = null
-  pendingQueryText.value = ''
-  // 移除最后两条消息（用户问题和AI占位）
-  if (messages.value.length >= 2) {
-    messages.value.pop()
-    messages.value.pop()
-  }
-}
-
-function applySuggestion(suggestion) {
-  if (suggestion.new_query) {
-    pendingConfirm.value = null
-    pendingQueryText.value = ''
-    queryText.value = suggestion.new_query
-    // 移除最后两条消息
-    if (messages.value.length >= 2) {
-      messages.value.pop()
-      messages.value.pop()
-    }
-  }
-}
-
 // ==================== 表选择相关方法 ====================
 const visibleCandidates = computed(() => {
   if (!pendingTableSelection.value?.candidates) return []
@@ -2816,56 +2496,14 @@ function toggleTableSelection(candidate) {
 
 async function confirmTableSelection() {
   if (selectedTableIds.value.length === 0) return
-
-  if (hasActivePendingSession.value) {
-    await submitPendingSessionAction({
-      actionType: 'confirm',
-      payload: {
-        selected_table_ids: selectedTableIds.value,
-        multi_table_mode: pendingTableSelection.value?.multi_table_mode || null
-      },
-      preserveSelection: true
-    })
-    return
-  }
-
-  // 保存多表模式信息（在清空 pendingTableSelection 之前）
-  const multiTableMode = pendingTableSelection.value?.multi_table_mode || null
-  const text = pendingQueryText.value
-  const queryId = originalQueryId.value
-
-  pendingTableSelection.value = null
-  resetPendingTableUi()
-
-  if (text && queryId) {
-    await continueQueryFromPendingState({
-      text,
-      queryId,
-      selectedTableIds: selectedTableIds.value,
-      multiTableMode,
-      forceExecute: false,
-      progressText: '正在使用选定表继续查询...'
-    })
-  }
-}
-
-async function cancelTableSelection() {
-  if (hasActivePendingSession.value) {
-    await cancelPendingSession()
-    return
-  }
-
-  pendingTableSelection.value = null
-  selectedTableIds.value = []
-  selectedTableId.value = null
-  resetPendingTableUi()
-  // 移除最后的用户消息
-  if (messages.value.length >= 1) {
-    const lastMsg = messages.value[messages.value.length - 1]
-    if (lastMsg.role === 'user') {
-      messages.value.pop()
-    }
-  }
+  await submitPendingSessionAction({
+    semanticAction: 'choose_table',
+    payload: {
+      selected_table_ids: selectedTableIds.value,
+      multi_table_mode: pendingTableSelection.value?.multi_table_mode || null
+    },
+    preserveSelection: true
+  })
 }
 
   // 展开全部：调用 API 获取所有可访问表
@@ -2967,38 +2605,20 @@ function canShowResultDetails(msg) {
   return false
 }
 
-function canRetryTableSelection(msg) {
-  return Boolean(
-    msg?.query_id &&
-    msg.role === 'assistant' &&
-    msg.status !== 'pending' &&
-    msg.status !== 'running'
-  )
-}
-
 async function reopenTableSelectionForMessage(msg) {
   if (!msg?.query_id) return
 
-  restartingQueryIds[msg.query_id] = true
   try {
-    const res = await querySessionAPI.submitAction(msg.query_id, {
-      action_type: 'change_table',
+    await submitResultSessionAction(msg, {
+      semanticAction: 'change_table',
       payload: { reason: '用户在结果态点击重新选表' },
-      actor_type: 'user',
-      actor_id: currentUser.value?.user_id || 'anonymous',
-      idempotency_key: buildIdempotencyKey('result-change-table')
+      preserveSelection: false,
+      idempotencyPrefix: 'result-change-table'
     })
-
-    const snapshot = applyPendingSessionSnapshot(res.data?.session, { preserveSelection: false })
-    if (snapshot?.state?.manual_table_override || visibleCandidates.value.length === 0) {
-      await expandAllTables()
-    }
     scrollToBottom()
   } catch (e) {
     console.error('重新进入选表阶段失败', e)
     ElMessage.error(e.response?.data?.detail || e.message || '重新进入选表阶段失败')
-  } finally {
-    delete restartingQueryIds[msg.query_id]
   }
 }
 
@@ -3819,6 +3439,14 @@ watch(isLoggedIn, (val) => {
   word-break: break-word;
 }
 
+.user-message-meta {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  font-size: 12px;
+  opacity: 0.88;
+}
+
 .assistant-message {
   font-size: 15px;
   line-height: 1.7;
@@ -4251,8 +3879,22 @@ watch(isLoggedIn, (val) => {
   line-height: 1.8;
 }
 
-.message-session-actions {
-  margin-bottom: 16px;
+.result-action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.result-action-bar-error {
+  margin-top: 12px;
+  margin-left: 28px;
+}
+
+.result-action-note {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
 }
 
 .inline-session-btn {
@@ -4923,6 +4565,20 @@ watch(isLoggedIn, (val) => {
   background: var(--bg-secondary);
   border-radius: 8px;
   overflow: hidden;
+}
+
+.understanding-list {
+  margin: 0;
+  padding: 12px 12px 12px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.understanding-item {
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .understanding-text {

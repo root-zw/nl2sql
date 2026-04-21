@@ -323,8 +323,8 @@ export const conversationAPI = {
     request.get(`/conversations/${conversationId}/context`, { params: { depth } }),
 
   // 解析结果后追问上下文
-  resolveFollowupContext: (conversationId, data) =>
-    request.post(`/conversations/${conversationId}/followup-context-resolution`, data),
+  resolveFollowupContext: (conversationId, data, config) =>
+    request.post(`/conversations/${conversationId}/followup-context-resolution`, data, config),
 
   // 停止消息生成
   stopMessage: (messageId) => request.post('/conversations/messages/stop', { message_id: messageId }),
@@ -338,10 +338,24 @@ export const conversationAPI = {
 // ============================================================================
 export const querySessionAPI = {
   // 获取查询会话快照
-  get: (queryId) => request.get(`/query-sessions/${queryId}`),
+  get: (queryId, config) => request.get(`/query-sessions/${queryId}`, config),
 
   // 提交确认阶段动作
   submitAction: (queryId, data) => request.post(`/query-sessions/${queryId}/actions`, data)
+}
+
+// ============================================================================
+// 治理候选管理
+// ============================================================================
+export const governanceCandidateAPI = {
+  // 获取治理候选列表
+  list: (params) => request.get('/admin/governance-candidates', { params }),
+
+  // 扫描最近学习事件并生成/更新治理候选
+  observeLearningEvents: (data) => request.post('/admin/governance-candidates/observe-learning-events', data),
+
+  // 审核治理候选
+  review: (candidateId, data) => request.post(`/admin/governance-candidates/${candidateId}/review`, data)
 }
 
 // ============================================================================
@@ -716,6 +730,7 @@ export default {
   query: queryAPI,
   conversation: conversationAPI,
   querySession: querySessionAPI,
+  governanceCandidate: governanceCandidateAPI,
   system: systemAPI,
   modelProvider: modelProviderAPI,
   scenarioConfig: scenarioConfigAPI,

@@ -20,6 +20,8 @@ class QueryStreamEmitter:
     def __init__(self, websocket: WebSocket):
         self.websocket = websocket
         self.query_id: Optional[str] = None
+        self.message_id: Optional[str] = None
+        self.thinking_steps: list[Dict[str, Any]] = []
         self.closed = False
 
     def bind_query(self, query_id: str):
@@ -28,6 +30,29 @@ class QueryStreamEmitter:
     def bind_message(self, message_id: str):
         """绑定消息ID（用于停止信号检查）"""
         self.message_id = message_id
+
+    def _upsert_thinking_step(
+        self,
+        step: str,
+        content: str,
+        *,
+        done: bool = False,
+        step_status: str = "started",
+    ) -> None:
+        step_payload = {
+            "step": step,
+            "content": content,
+            "done": done,
+            "status": step_status,
+        }
+        for index, existing in enumerate(self.thinking_steps):
+            if existing.get("step") == step:
+                self.thinking_steps[index] = step_payload
+                return
+        self.thinking_steps.append(step_payload)
+
+    def get_thinking_steps(self) -> list[Dict[str, Any]]:
+        return sanitize_for_json(self.thinking_steps)
 
     async def _send(self, message: Dict[str, Any]) -> bool:
         """发送消息到 WebSocket，返回是否成功"""
@@ -115,6 +140,7 @@ class QueryStreamEmitter:
             done: 该步骤是否完成
             step_status: 步骤状态 (started/success/error/warning)
         """
+        self._upsert_thinking_step(step, content, done=done, step_status=step_status)
         await self.emit("thinking", {
             "step": step,
             "content": content,

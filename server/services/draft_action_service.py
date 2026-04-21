@@ -24,6 +24,26 @@ from server.utils.json_utils import sanitize_for_json
 logger = structlog.get_logger()
 
 ALLOWED_ACTIONS = {
+    "question_intake": {
+        "change_table",
+        "request_explanation",
+        "exit_current",
+    },
+    "draft_generation": {
+        "change_table",
+        "request_explanation",
+        "exit_current",
+    },
+    "connection_resolution": {
+        "change_table",
+        "request_explanation",
+        "exit_current",
+    },
+    "permission_resolution": {
+        "change_table",
+        "request_explanation",
+        "exit_current",
+    },
     "table_resolution": {
         "confirm",
         "revise",
@@ -51,13 +71,16 @@ ALLOWED_ACTIONS = {
         "change_table",
         "revise",
         "request_explanation",
-        "exit_current",
+    },
+    "failed": {
+        "change_table",
+        "revise",
+        "request_explanation",
     },
     "ir_ready": {
         "change_table",
         "revise",
         "request_explanation",
-        "exit_current",
     },
     "table_resolved": {
         "change_table",
@@ -65,6 +88,31 @@ ALLOWED_ACTIONS = {
         "exit_current",
     },
 }
+
+SEMANTIC_ACTION_ALIASES = {
+    "choose_table": "confirm",
+    "confirm_draft": "confirm",
+    "manual_select_table": "change_table",
+    "approve_execution": "execution_decision",
+    "cancel_query": "exit_current",
+}
+
+SEMANTIC_ACTION_NODE_REQUIREMENTS = {
+    "choose_table": {"table_resolution"},
+    "confirm_draft": {"draft_confirmation"},
+    "manual_select_table": {"table_resolution"},
+    "approve_execution": {"execution_guard"},
+}
+
+LEGACY_CONFIRMATION_STATE_KEYS = [
+    "candidate_snapshot",
+    "draft_state",
+    "draft_confirmation_card",
+    "draft_confirmation_required",
+    "draft_confirmation_approved",
+]
+
+RUNNING_RESULT_PENDING_ACTIONS = ["change_table", "request_explanation", "exit_current"]
 
 
 class DraftActionService:
@@ -173,7 +221,7 @@ class DraftActionService:
         if not normalized:
             return {
                 "resolution": "need_clarification",
-                "message": "请告诉我你是想确认当前理解、修改条件，还是重新选表。",
+                "message": "请告诉我你是想确认当前方案、修改问题、重新选表，还是想看看系统是怎么理解的。",
             }
 
         if any(token in normalized for token in ["不是这张表", "换表", "表不对", "重新选表"]):
@@ -210,7 +258,7 @@ class DraftActionService:
                 "payload": {"mode": "cancel", "source_text": normalized},
             }
 
-        if any(token in normalized for token in ["为什么", "解释", "为啥"]):
+        if any(token in normalized for token in ["为什么", "解释", "为啥", "系统理解", "怎么理解", "如何理解"]):
             return {
                 "resolution": "resolved_to_action",
                 "action_type": "request_explanation",
@@ -233,7 +281,7 @@ class DraftActionService:
         if current_node in {"table_resolution", "draft_confirmation", "execution_guard"}:
             return {
                 "resolution": "need_clarification",
-                "message": "我还不确定你是在确认当前方案、修改条件，还是已经开始了一个新问题。请再明确一点。",
+                "message": "我还不确定你是在确认当前方案、修改问题、查看系统理解，还是已经开始了一个新问题。请再明确一点。",
             }
 
         return {
@@ -258,6 +306,27 @@ class DraftActionService:
             raise ValueError(f"当前节点 {current_node} 不允许动作 {action_type}")
 
     @staticmethod
+    def _normalize_requested_action(
+        current_node: str,
+        action_type: str,
+        payload: Optional[Dict[str, Any]],
+    ) -> Tuple[str, Dict[str, Any]]:
+        normalized_payload = dict(payload or {})
+        required_nodes = SEMANTIC_ACTION_NODE_REQUIREMENTS.get(action_type)
+        if required_nodes and current_node not in required_nodes:
+            raise ValueError(f"当前节点 {current_node} 不允许语义动作 {action_type}")
+
+        resolved_action = SEMANTIC_ACTION_ALIASES.get(action_type, action_type)
+        if action_type == "manual_select_table":
+            normalized_payload["mode"] = "manual_select"
+        elif action_type == "approve_execution":
+            normalized_payload["decision"] = "approve"
+        elif action_type == "cancel_query":
+            normalized_payload.setdefault("mode", "cancel")
+
+        return resolved_action, normalized_payload
+
+    @staticmethod
     def _build_resume_directive(
         *,
         updated_session: Optional[Dict[str, Any]],
@@ -274,14 +343,13 @@ class DraftActionService:
         multi_table_mode = (
             state.get("multi_table_mode")
             or table_resolution_state.get("multi_table_mode")
-            or QuerySessionService._normalize_state(state.get("candidate_snapshot")).get("multi_table_mode")
         )
 
         if current_node == "draft_generation" and action_type in {"confirm", "revise"}:
             progress_text = "正在根据修改意见重算确认稿..."
             resume_ir = None
             if action_type == "confirm":
-                if state.get("draft_confirmation_approved") and state.get("ir_snapshot"):
+                if QuerySessionService.has_confirmed_draft(state) and state.get("ir_snapshot"):
                     progress_text = "正在基于已确认草稿继续查询..."
                     resume_ir = state.get("ir_snapshot")
                 else:
@@ -331,10 +399,7 @@ class DraftActionService:
         if action_type == "confirm":
             selected_table_ids = payload.get("selected_table_ids") or state.get("selected_table_ids") or state.get("recommended_table_ids") or []
             if current_node == "draft_confirmation":
-                draft_payload = (
-                    QuerySessionService._normalize_state(state.get("provisional_draft"))
-                    or QuerySessionService._normalize_state(state.get("draft_state"))
-                )
+                draft_payload = QuerySessionService._normalize_state(state.get("provisional_draft"))
                 confirmed_draft = QuerySessionService.build_confirmed_draft_state(
                     draft_payload,
                     draft_json=(
@@ -347,12 +412,13 @@ class DraftActionService:
                     "running",
                     "draft_generation",
                     {
-                        "pending_actions": [],
+                        "__delete_keys__": LEGACY_CONFIRMATION_STATE_KEYS,
+                        "pending_actions": RUNNING_RESULT_PENDING_ACTIONS,
                         "selected_table_ids": selected_table_ids,
                         "selected_table_id": selected_table_ids[0] if selected_table_ids else state.get("selected_table_id"),
                         "provisional_draft": None,
                         "confirmed_draft": confirmed_draft,
-                        "draft_confirmation_approved": True,
+                        "revision_request": None,
                         "interruption_requested": False,
                         "last_action": "confirm",
                     },
@@ -361,17 +427,18 @@ class DraftActionService:
                 "running",
                 "draft_generation",
                 {
-                    "pending_actions": [],
+                    "__delete_keys__": LEGACY_CONFIRMATION_STATE_KEYS,
+                    "pending_actions": RUNNING_RESULT_PENDING_ACTIONS,
                     "selected_table_ids": selected_table_ids,
                     "selected_table_id": selected_table_ids[0] if selected_table_ids else state.get("selected_table_id"),
                     "draft_version": draft_version + 1,
                     "invalidated_artifacts": [],
-                    "provisional_draft": None,
+                    "provisional_draft": QuerySessionService.build_provisional_draft_state(
+                        status="pending_generation",
+                        confirmation_required=True,
+                    ),
                     "confirmed_draft": None,
-                    "draft_confirmation_required": True,
-                    "draft_confirmation_approved": False,
-                    "draft_state": None,
-                    "draft_confirmation_card": None,
+                    "revision_request": None,
                     "manual_table_override": False,
                     "interruption_requested": False,
                     "last_action": "confirm",
@@ -387,6 +454,7 @@ class DraftActionService:
                 "awaiting_user_action",
                 "table_resolution",
                 {
+                    "__delete_keys__": LEGACY_CONFIRMATION_STATE_KEYS,
                     "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
                     "rejected_table_ids": rejected,
                     "invalidated_artifacts": ["draft", "ir", "sql", "result"],
@@ -401,10 +469,7 @@ class DraftActionService:
                     "confirmed_draft": None,
                     "execution_guard_state": None,
                     "execution_guard": None,
-                    "draft_state": None,
-                    "draft_confirmation_card": None,
-                    "draft_confirmation_required": False,
-                    "draft_confirmation_approved": False,
+                    "revision_request": None,
                     "interruption_requested": session.get("status") == "running",
                     "interrupt_target_message_id": session.get("message_id"),
                     "interrupt_reason": "change_table",
@@ -423,7 +488,8 @@ class DraftActionService:
                 "running",
                 "draft_generation",
                 {
-                    "pending_actions": [],
+                    "__delete_keys__": LEGACY_CONFIRMATION_STATE_KEYS,
+                    "pending_actions": RUNNING_RESULT_PENDING_ACTIONS,
                     "selected_table_ids": selected_table_ids,
                     "selected_table_id": selected_table_ids[0] if selected_table_ids else state.get("selected_table_id"),
                     "revision_request": sanitize_for_json(payload),
@@ -432,14 +498,13 @@ class DraftActionService:
                     "ir_snapshot": None,
                     "sql_preview": None,
                     "result_meta": None,
-                    "provisional_draft": None,
+                    "provisional_draft": QuerySessionService.build_provisional_draft_state(
+                        status="pending_generation",
+                        confirmation_required=True,
+                    ),
                     "confirmed_draft": None,
                     "execution_guard_state": None,
                     "execution_guard": None,
-                    "draft_state": None,
-                    "draft_confirmation_card": None,
-                    "draft_confirmation_required": True,
-                    "draft_confirmation_approved": False,
                     "draft_version": draft_version + 1,
                     "interruption_requested": session.get("status") == "running",
                     "interrupt_target_message_id": session.get("message_id"),
@@ -461,16 +526,21 @@ class DraftActionService:
         if action_type == "execution_decision":
             decision = payload.get("decision", "reject")
             if decision == "approve":
+                confirmed_draft = QuerySessionService.build_downstream_confirmed_draft_state(
+                    state,
+                    draft_json=QuerySessionService._normalize_state(state.get("ir_snapshot")) or None,
+                )
                 return (
                     "running",
                     "execution_approved",
                     {
+                        "__delete_keys__": LEGACY_CONFIRMATION_STATE_KEYS,
                         "pending_actions": [],
                         "last_action": "execution_decision",
                         "execution_decision": "approve",
                         "execution_guard_state": None,
                         "execution_guard": None,
-                        "draft_confirmation_required": False,
+                        "confirmed_draft": confirmed_draft,
                         "interruption_requested": False,
                     },
                 )
@@ -605,6 +675,13 @@ class DraftActionService:
                 resolved_payload = dict(reply_resolution.get("payload") or {})
             elif not resolved_action:
                 raise ValueError("必须提供 action_type 或 natural_language_reply")
+
+            if resolved_action:
+                resolved_action, resolved_payload = self._normalize_requested_action(
+                    current_node,
+                    resolved_action,
+                    resolved_payload,
+                )
 
             self._ensure_action_allowed(current_node, resolved_action)
 

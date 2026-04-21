@@ -301,8 +301,6 @@ async def llm_select_table(
                 recommended_table_ids=recommended_table_ids  # LLM 推荐的表，前端用于预选
             )
             
-            await stream_table_selection(stream, card, query_id)
-            
             return {
                 "status": "need_confirmation",
                 "response": QueryResponse(

@@ -20,6 +20,23 @@ from server.utils.json_utils import sanitize_for_json
 
 logger = structlog.get_logger()
 
+RESULT_ACTION_NODES = {
+    "question_intake",
+    "draft_generation",
+    "connection_resolution",
+    "permission_resolution",
+    "table_resolved",
+    "ir_ready",
+    "completed",
+    "failed",
+}
+
+PENDING_USER_ACTION_NODES = (
+    "table_resolution",
+    "execution_guard",
+    "draft_confirmation",
+)
+
 
 class QuerySessionService:
     """查询会话状态服务"""
@@ -69,7 +86,12 @@ class QuerySessionService:
     def _merge_state(current_state: Optional[Dict[str, Any]], updates: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         merged = QuerySessionService._normalize_state(current_state)
         if updates:
-            merged.update(sanitize_for_json(QuerySessionService._normalize_state(updates)))
+            normalized_updates = QuerySessionService._normalize_state(updates)
+            delete_keys = normalized_updates.pop("__delete_keys__", []) or []
+            merged.update(sanitize_for_json(normalized_updates))
+            for key in delete_keys:
+                if key:
+                    merged.pop(str(key), None)
         return merged
 
     @staticmethod
@@ -79,6 +101,37 @@ class QuerySessionService:
         if hasattr(payload, "model_dump"):
             payload = payload.model_dump()
         return QuerySessionService._normalize_state(payload)
+
+    @staticmethod
+    def _sanitize_table_names(items: Optional[list[Any]]) -> list[str]:
+        normalized_names: list[str] = []
+        seen_names: set[str] = set()
+        for item in items or []:
+            name = str(item).strip()
+            if not name or QuerySessionService._looks_like_uuid(name) or name in seen_names:
+                continue
+            seen_names.add(name)
+            normalized_names.append(name)
+        return normalized_names
+
+    @staticmethod
+    def _sanitize_summary_items(items: Optional[list[Any]]) -> list[str]:
+        normalized_items: list[str] = []
+        for item in items or []:
+            text = str(item).strip()
+            if not text or QuerySessionService._looks_like_uuid(text):
+                continue
+            for prefix in ("当前数据表：", "当前涉及数据表："):
+                if text.startswith(prefix):
+                    table_names = QuerySessionService._sanitize_table_names(text[len(prefix):].split("、"))
+                    if not table_names:
+                        text = ""
+                    else:
+                        text = f"{prefix}{'、'.join(table_names)}"
+                    break
+            if text:
+                normalized_items.append(text)
+        return normalized_items
 
     @staticmethod
     def build_table_resolution_state(
@@ -132,6 +185,10 @@ class QuerySessionService:
         draft_json: Optional[Dict[str, Any]] = None,
         warnings: Optional[list[Any]] = None,
         suggestions: Optional[list[Any]] = None,
+        confidence: Optional[float] = None,
+        ambiguities: Optional[list[Any]] = None,
+        open_points: Optional[list[Any]] = None,
+        selected_table_names: Optional[list[str]] = None,
         confirmed: Optional[bool] = None,
         confirmation_required: Optional[bool] = None,
         table_dependent: Optional[bool] = None,
@@ -155,6 +212,28 @@ class QuerySessionService:
                 "draft_json": draft_json if draft_json is not None else draft_state.get("draft_json") or draft_state.get("ir"),
                 "warnings": list(warnings if warnings is not None else draft_state.get("warnings") or []),
                 "suggestions": list(suggestions if suggestions is not None else draft_state.get("suggestions") or []),
+                "confidence": (
+                    confidence
+                    if confidence is not None
+                    else draft_state.get("confidence")
+                ),
+                "ambiguities": list(
+                    ambiguities
+                    if ambiguities is not None
+                    else draft_state.get("ambiguities") or []
+                ),
+                "open_points": list(
+                    open_points
+                    if open_points is not None
+                    else draft_state.get("open_points") or []
+                ),
+                "selected_table_names": list(
+                    QuerySessionService._sanitize_table_names(
+                        selected_table_names
+                        if selected_table_names is not None
+                        else draft_state.get("selected_table_names") or []
+                    )
+                ),
                 "confirmed": bool(confirmed) if confirmed is not None else bool(draft_state.get("confirmed")),
                 "confirmation_required": (
                     bool(confirmation_required)
@@ -176,25 +255,79 @@ class QuerySessionService:
         recommended_table_ids: Optional[list[str]] = None,
         manual_table_override: Optional[bool] = None,
         allow_multi_select: Optional[bool] = None,
+        natural_language: Optional[str] = None,
+        draft_json: Optional[Dict[str, Any]] = None,
+        warnings: Optional[list[Any]] = None,
+        suggestions: Optional[list[Any]] = None,
+        confidence: Optional[float] = None,
+        ambiguities: Optional[list[Any]] = None,
+        open_points: Optional[list[Any]] = None,
+        selected_table_names: Optional[list[str]] = None,
+        confirmation_required: Optional[bool] = None,
+        table_dependent: Optional[bool] = None,
+        invalidate_on_table_change: Optional[bool] = None,
     ) -> Dict[str, Any]:
         draft_state = QuerySessionService._normalize_confirmation_state(payload)
+        resolved_confirmation_required = confirmation_required
+        if resolved_confirmation_required is None and status in {"pending_generation", "awaiting_confirmation"}:
+            resolved_confirmation_required = True
+        if resolved_confirmation_required is None and draft_state.get("confirmation_required") is not None:
+            resolved_confirmation_required = bool(draft_state.get("confirmation_required"))
+        if resolved_confirmation_required is None:
+            resolved_confirmation_required = False
 
         # 如果传入的已经是草稿形态，直接规整为 provisional draft。
         if any(
+            value is not None
+            for value in (
+                natural_language,
+                draft_json,
+                warnings,
+                suggestions,
+                status,
+                confirmation_required,
+                table_dependent,
+                invalidate_on_table_change,
+            )
+        ) or any(
             draft_state.get(field) is not None
             for field in ("natural_language", "draft_json", "status", "warnings", "suggestions")
         ) and not draft_state.get("candidates"):
             return QuerySessionService.build_draft_state(
                 draft_state,
                 status=status or draft_state.get("status") or "provisional",
-                natural_language=draft_state.get("natural_language"),
-                draft_json=draft_state.get("draft_json"),
-                warnings=list(draft_state.get("warnings") or []),
-                suggestions=list(draft_state.get("suggestions") or []),
+                natural_language=natural_language or draft_state.get("natural_language"),
+                draft_json=(
+                    draft_json
+                    if draft_json is not None
+                    else draft_state.get("draft_json")
+                ),
+                warnings=list(warnings if warnings is not None else draft_state.get("warnings") or []),
+                suggestions=list(suggestions if suggestions is not None else draft_state.get("suggestions") or []),
+                confidence=(
+                    confidence
+                    if confidence is not None
+                    else draft_state.get("confidence")
+                ),
+                ambiguities=list(
+                    ambiguities
+                    if ambiguities is not None
+                    else draft_state.get("ambiguities") or []
+                ),
+                open_points=list(
+                    open_points
+                    if open_points is not None
+                    else draft_state.get("open_points") or []
+                ),
+                selected_table_names=list(
+                    selected_table_names
+                    if selected_table_names is not None
+                    else draft_state.get("selected_table_names") or []
+                ),
                 confirmed=False,
-                confirmation_required=False,
-                table_dependent=True,
-                invalidate_on_table_change=True,
+                confirmation_required=resolved_confirmation_required,
+                table_dependent=table_dependent,
+                invalidate_on_table_change=invalidate_on_table_change,
             )
 
         candidates = list(draft_state.get("candidates") or [])
@@ -204,8 +337,10 @@ class QuerySessionService:
         seen_names: set[str] = set()
         for candidate in candidates:
             table_id = candidate.get("table_id")
-            table_name = candidate.get("table_name")
+            table_name = str(candidate.get("table_name") or "").strip()
             if not table_name or table_name in seen_names:
+                continue
+            if QuerySessionService._looks_like_uuid(table_name):
                 continue
             if preferred_table_ids and table_id not in preferred_table_ids:
                 continue
@@ -214,8 +349,10 @@ class QuerySessionService:
 
         if not candidate_names:
             for candidate in candidates:
-                table_name = candidate.get("table_name")
+                table_name = str(candidate.get("table_name") or "").strip()
                 if not table_name or table_name in seen_names:
+                    continue
+                if QuerySessionService._looks_like_uuid(table_name):
                     continue
                 seen_names.add(table_name)
                 candidate_names.append(table_name)
@@ -263,11 +400,43 @@ class QuerySessionService:
             draft_json=None,
             warnings=warnings,
             suggestions=[],
+            confidence=None,
+            ambiguities=[],
+            open_points=[],
+            selected_table_names=candidate_names,
             confirmed=False,
             confirmation_required=False,
             table_dependent=True,
             invalidate_on_table_change=True,
         )
+
+    @staticmethod
+    def has_confirmed_draft(state: Optional[Any]) -> bool:
+        session_state = QuerySessionService._normalize_state(state)
+        confirmed_draft = QuerySessionService._normalize_state(session_state.get("confirmed_draft"))
+        if not confirmed_draft:
+            return False
+
+        if confirmed_draft.get("confirmed") is not None:
+            return bool(confirmed_draft.get("confirmed"))
+        if confirmed_draft.get("status"):
+            return str(confirmed_draft.get("status")) == "confirmed"
+        return any(
+            confirmed_draft.get(field)
+            for field in ("natural_language", "draft_json", "warnings", "suggestions")
+        )
+
+    @staticmethod
+    def requires_draft_confirmation(state: Optional[Any]) -> bool:
+        session_state = QuerySessionService._normalize_state(state)
+        provisional_draft = QuerySessionService._normalize_state(session_state.get("provisional_draft"))
+        if not provisional_draft or QuerySessionService.has_confirmed_draft(session_state):
+            return False
+
+        if provisional_draft.get("confirmation_required") is not None:
+            return bool(provisional_draft.get("confirmation_required"))
+
+        return str(provisional_draft.get("status") or "") in {"pending_generation", "awaiting_confirmation"}
 
     @staticmethod
     def build_confirmed_draft_state(
@@ -277,6 +446,10 @@ class QuerySessionService:
         draft_json: Optional[Dict[str, Any]] = None,
         warnings: Optional[list[Any]] = None,
         suggestions: Optional[list[Any]] = None,
+        confidence: Optional[float] = None,
+        ambiguities: Optional[list[Any]] = None,
+        open_points: Optional[list[Any]] = None,
+        selected_table_names: Optional[list[str]] = None,
     ) -> Dict[str, Any]:
         draft_state = QuerySessionService._normalize_confirmation_state(payload)
         return QuerySessionService.build_draft_state(
@@ -290,10 +463,86 @@ class QuerySessionService:
             ),
             warnings=list(warnings if warnings is not None else draft_state.get("warnings") or []),
             suggestions=list(suggestions if suggestions is not None else draft_state.get("suggestions") or []),
+            confidence=(
+                confidence
+                if confidence is not None
+                else draft_state.get("confidence")
+            ),
+            ambiguities=list(
+                ambiguities
+                if ambiguities is not None
+                else draft_state.get("ambiguities") or []
+            ),
+            open_points=list(
+                open_points
+                if open_points is not None
+                else draft_state.get("open_points") or []
+            ),
+            selected_table_names=list(
+                selected_table_names
+                if selected_table_names is not None
+                else draft_state.get("selected_table_names") or []
+            ),
             confirmed=True,
             confirmation_required=False,
             table_dependent=True,
             invalidate_on_table_change=True,
+        )
+
+    @staticmethod
+    def build_downstream_confirmed_draft_state(
+        state: Optional[Any] = None,
+        *,
+        draft_json: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        session_state = QuerySessionService._normalize_state(state)
+        explicit_confirmed_draft = QuerySessionService._normalize_state(session_state.get("confirmed_draft"))
+        provisional_draft = QuerySessionService._normalize_state(session_state.get("provisional_draft"))
+        ir_snapshot = QuerySessionService._normalize_state(session_state.get("ir_snapshot"))
+
+        if explicit_confirmed_draft:
+            base_draft = explicit_confirmed_draft
+        else:
+            provisional_confirmed = bool(provisional_draft.get("confirmed")) or str(
+                provisional_draft.get("status") or ""
+            ) == "confirmed"
+            if not provisional_confirmed:
+                return None
+            base_draft = provisional_draft
+
+        resolved_draft_json = (
+            draft_json
+            if draft_json is not None
+            else base_draft.get("draft_json") or base_draft.get("ir") or ir_snapshot or None
+        )
+        resolved_natural_language = base_draft.get("natural_language")
+        resolved_warnings = list(base_draft.get("warnings") or [])
+        resolved_suggestions = list(base_draft.get("suggestions") or [])
+        resolved_confidence = base_draft.get("confidence")
+        resolved_ambiguities = list(base_draft.get("ambiguities") or [])
+        resolved_open_points = list(base_draft.get("open_points") or [])
+        resolved_selected_table_names = list(base_draft.get("selected_table_names") or [])
+
+        if not any([
+            resolved_natural_language,
+            resolved_draft_json,
+            resolved_warnings,
+            resolved_suggestions,
+            resolved_ambiguities,
+            resolved_open_points,
+        ]):
+            return None
+
+        return QuerySessionService.build_confirmed_draft_state(
+            base_draft,
+            natural_language=resolved_natural_language,
+            draft_json=resolved_draft_json,
+            warnings=resolved_warnings,
+            suggestions=resolved_suggestions,
+            confidence=resolved_confidence,
+            ambiguities=resolved_ambiguities,
+            open_points=resolved_open_points,
+            selected_table_names=resolved_selected_table_names,
         )
 
     @staticmethod
@@ -342,16 +591,69 @@ class QuerySessionService:
         return action_type
 
     @staticmethod
+    def _resolve_selected_table_names(state: Dict[str, Any]) -> list[str]:
+        draft_sources = [
+            QuerySessionService._normalize_state(state.get("provisional_draft")),
+            QuerySessionService._normalize_state(state.get("confirmed_draft")),
+        ]
+        for draft_state in draft_sources:
+            selected_table_names = QuerySessionService._sanitize_table_names(draft_state.get("selected_table_names") or [])
+            if selected_table_names:
+                return selected_table_names
+
+        table_resolution_state = QuerySessionService._normalize_confirmation_state(state.get("table_resolution_state"))
+        selected_table_ids = set(QuerySessionService._get_selected_table_ids(state))
+        resolved_names: list[str] = []
+        seen_names: set[str] = set()
+        for candidate in table_resolution_state.get("candidates") or []:
+            table_id = candidate.get("table_id")
+            table_name = str(candidate.get("table_name") or "").strip()
+            if not table_name or table_name in seen_names:
+                continue
+            if QuerySessionService._looks_like_uuid(table_name):
+                continue
+            if selected_table_ids and table_id not in selected_table_ids:
+                continue
+            seen_names.add(table_name)
+            resolved_names.append(table_name)
+        return resolved_names
+
+    @staticmethod
     def _build_safe_summary(current_node: Optional[str], state: Dict[str, Any]) -> Dict[str, Any]:
         safe_summary = QuerySessionService._normalize_state(state.get("safe_summary"))
-        open_points = list(safe_summary.get("open_points") or [])
+        draft = QuerySessionService._normalize_state(state.get("provisional_draft")) or QuerySessionService._normalize_state(
+            state.get("confirmed_draft")
+        )
+        open_points = QuerySessionService._sanitize_summary_items(safe_summary.get("open_points") or [])
         if not open_points:
             if current_node == "table_resolution":
                 open_points = ["需确认应使用哪张数据表"]
             elif current_node == "draft_confirmation":
-                open_points = ["需确认当前查询草稿是否符合预期"]
+                open_points = QuerySessionService._sanitize_summary_items(
+                    draft.get("open_points") or draft.get("ambiguities") or []
+                )
+                if not open_points:
+                    open_points = ["需确认当前查询草稿是否符合预期"]
             elif current_node == "execution_guard":
                 open_points = ["需确认是否执行当前查询"]
+
+        known_constraints = QuerySessionService._sanitize_summary_items(safe_summary.get("known_constraints") or [])
+        if not known_constraints:
+            selected_table_names = QuerySessionService._resolve_selected_table_names(state)
+            if selected_table_names:
+                known_constraints.append(f"当前数据表：{'、'.join(selected_table_names)}")
+
+            analysis_context = QuerySessionService._normalize_state(state.get("analysis_context"))
+            scope_summary = str(analysis_context.get("scope_summary") or "").strip()
+            if scope_summary and not QuerySessionService._looks_like_uuid(scope_summary):
+                known_constraints.append(f"承接上一结果：{scope_summary}")
+
+            confidence = draft.get("confidence")
+            if confidence is not None:
+                try:
+                    known_constraints.append(f"当前理解置信度：{round(float(confidence) * 100)}%")
+                except (TypeError, ValueError):
+                    pass
 
         return {
             "user_goal_summary": (
@@ -359,26 +661,40 @@ class QuerySessionService:
                 or state.get("resolved_question_text")
                 or state.get("question_text")
             ),
-            "domain_hint": safe_summary.get("domain_hint") or state.get("domain_name") or state.get("domain_id"),
-            "known_constraints": list(safe_summary.get("known_constraints") or []),
+            "domain_hint": (
+                safe_summary.get("domain_hint")
+                if not QuerySessionService._looks_like_uuid(safe_summary.get("domain_hint"))
+                else None
+            )
+            or state.get("domain_name")
+            or (None if QuerySessionService._looks_like_uuid(state.get("domain_id")) else state.get("domain_id")),
+            "known_constraints": known_constraints,
             "open_points": open_points,
         }
 
     @staticmethod
+    def _looks_like_uuid(value: Optional[Any]) -> bool:
+        if value in (None, ""):
+            return False
+        try:
+            UUID(str(value))
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
     def _build_table_resolution(current_node: Optional[str], state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         table_resolution_state = QuerySessionService._normalize_confirmation_state(state.get("table_resolution_state"))
-        candidate_snapshot = QuerySessionService._normalize_state(state.get("candidate_snapshot"))
         selected_table_ids = QuerySessionService._get_selected_table_ids(state)
         recommended_table_ids = list(
             state.get("recommended_table_ids")
             or table_resolution_state.get("recommended_table_ids")
-            or candidate_snapshot.get("recommended_table_ids")
             or []
         )
         rejected_table_ids = list(state.get("rejected_table_ids") or table_resolution_state.get("rejected_table_ids") or [])
-        candidates = list(table_resolution_state.get("candidates") or candidate_snapshot.get("candidates") or [])
+        candidates = list(table_resolution_state.get("candidates") or [])
 
-        if not any([table_resolution_state, candidate_snapshot, selected_table_ids, recommended_table_ids, rejected_table_ids]):
+        if not any([table_resolution_state, selected_table_ids, recommended_table_ids, rejected_table_ids]):
             return None
 
         status = "idle"
@@ -389,22 +705,17 @@ class QuerySessionService:
 
         return {
             "status": status,
-            "question": table_resolution_state.get("question") or candidate_snapshot.get("question") or state.get("question_text"),
-            "message": table_resolution_state.get("message") or candidate_snapshot.get("message"),
-            "reason_summary": table_resolution_state.get("reason_summary") or candidate_snapshot.get("confirmation_reason"),
+            "question": table_resolution_state.get("question") or state.get("question_text"),
+            "message": table_resolution_state.get("message"),
+            "reason_summary": table_resolution_state.get("reason_summary"),
             "candidates": candidates,
             "recommended_table_ids": recommended_table_ids,
             "selected_table_ids": selected_table_ids,
             "rejected_table_ids": rejected_table_ids,
-            "allow_multi_select": bool(
-                table_resolution_state.get("allow_multi_select")
-                if table_resolution_state.get("allow_multi_select") is not None
-                else candidate_snapshot.get("allow_multi_select")
-            ),
+            "allow_multi_select": bool(table_resolution_state.get("allow_multi_select")),
             "multi_table_mode": (
                 state.get("multi_table_mode")
                 or table_resolution_state.get("multi_table_mode")
-                or candidate_snapshot.get("multi_table_mode")
             ),
             "manual_table_override": bool(
                 state.get("manual_table_override")
@@ -422,23 +733,20 @@ class QuerySessionService:
             return None
 
         table_resolution_state = QuerySessionService._normalize_confirmation_state(state.get("table_resolution_state"))
-        candidate_snapshot = QuerySessionService._normalize_state(state.get("candidate_snapshot"))
-        if not any([table_resolution_state, candidate_snapshot]):
+        if not table_resolution_state:
             return None
 
         return QuerySessionService.build_provisional_draft_state(
-            table_resolution_state or candidate_snapshot,
+            table_resolution_state,
             question_text=(
                 state.get("resolved_question_text")
                 or state.get("question_text")
                 or table_resolution_state.get("question")
-                or candidate_snapshot.get("question")
             ),
             selected_table_ids=QuerySessionService._get_selected_table_ids(state),
             recommended_table_ids=list(
                 state.get("recommended_table_ids")
                 or table_resolution_state.get("recommended_table_ids")
-                or candidate_snapshot.get("recommended_table_ids")
                 or []
             ),
             manual_table_override=(
@@ -453,9 +761,6 @@ class QuerySessionService:
     def _build_draft(current_node: Optional[str], state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         provisional_draft = QuerySessionService._normalize_state(state.get("provisional_draft"))
         confirmed_draft = QuerySessionService._normalize_state(state.get("confirmed_draft"))
-        draft_state = QuerySessionService._normalize_confirmation_state(state.get("draft_state"))
-        draft_confirmation_card = QuerySessionService._normalize_state(state.get("draft_confirmation_card"))
-        ir_snapshot = QuerySessionService._normalize_state(state.get("ir_snapshot"))
         table_resolution_provisional_draft = QuerySessionService._build_table_resolution_provisional_draft(
             current_node,
             state,
@@ -464,17 +769,10 @@ class QuerySessionService:
         if not any([
             provisional_draft,
             confirmed_draft,
-            draft_state,
-            draft_confirmation_card,
-            ir_snapshot,
             table_resolution_provisional_draft,
         ]):
             return None
 
-        derived_draft_state = draft_state or QuerySessionService.build_draft_state(
-            draft_confirmation_card,
-            draft_json=draft_confirmation_card.get("ir") or ir_snapshot or None,
-        )
         active_draft_state: Dict[str, Any]
         if provisional_draft:
             status = provisional_draft.get("status") or "provisional"
@@ -482,6 +780,12 @@ class QuerySessionService:
             draft_json = provisional_draft.get("draft_json")
             warnings = list(provisional_draft.get("warnings") or [])
             suggestions = list(provisional_draft.get("suggestions") or [])
+            confidence = provisional_draft.get("confidence")
+            ambiguities = list(provisional_draft.get("ambiguities") or [])
+            open_points = list(provisional_draft.get("open_points") or [])
+            selected_table_names = QuerySessionService._sanitize_table_names(
+                provisional_draft.get("selected_table_names") or []
+            )
             active_draft_state = provisional_draft
         elif confirmed_draft:
             status = confirmed_draft.get("status") or "confirmed"
@@ -489,6 +793,12 @@ class QuerySessionService:
             draft_json = confirmed_draft.get("draft_json")
             warnings = list(confirmed_draft.get("warnings") or [])
             suggestions = list(confirmed_draft.get("suggestions") or [])
+            confidence = confirmed_draft.get("confidence")
+            ambiguities = list(confirmed_draft.get("ambiguities") or [])
+            open_points = list(confirmed_draft.get("open_points") or [])
+            selected_table_names = QuerySessionService._sanitize_table_names(
+                confirmed_draft.get("selected_table_names") or []
+            )
             active_draft_state = confirmed_draft
         elif table_resolution_provisional_draft:
             status = table_resolution_provisional_draft.get("status") or "provisional"
@@ -496,27 +806,18 @@ class QuerySessionService:
             draft_json = table_resolution_provisional_draft.get("draft_json")
             warnings = list(table_resolution_provisional_draft.get("warnings") or [])
             suggestions = list(table_resolution_provisional_draft.get("suggestions") or [])
+            confidence = table_resolution_provisional_draft.get("confidence")
+            ambiguities = list(table_resolution_provisional_draft.get("ambiguities") or [])
+            open_points = list(table_resolution_provisional_draft.get("open_points") or [])
+            selected_table_names = QuerySessionService._sanitize_table_names(
+                table_resolution_provisional_draft.get("selected_table_names") or []
+            )
             active_draft_state = table_resolution_provisional_draft
         else:
-            if current_node == "draft_confirmation":
-                status = "awaiting_confirmation"
-            elif state.get("draft_confirmation_approved"):
-                status = "confirmed"
-            else:
-                status = derived_draft_state.get("status") or "available"
-            natural_language = derived_draft_state.get("natural_language")
-            draft_json = derived_draft_state.get("draft_json") or derived_draft_state.get("ir") or ir_snapshot or None
-            warnings = list(derived_draft_state.get("warnings") or [])
-            suggestions = list(derived_draft_state.get("suggestions") or [])
-            active_draft_state = derived_draft_state
+            return None
 
-        confirmed = state.get("draft_confirmation_approved")
-        if confirmed is None:
-            confirmed = active_draft_state.get("confirmed")
-
-        confirmation_required = state.get("draft_confirmation_required")
-        if confirmation_required is None:
-            confirmation_required = active_draft_state.get("confirmation_required")
+        confirmed = active_draft_state.get("confirmed")
+        confirmation_required = active_draft_state.get("confirmation_required")
 
         table_dependent = active_draft_state.get("table_dependent")
         if table_dependent is None:
@@ -534,6 +835,10 @@ class QuerySessionService:
             "draft_json": draft_json,
             "warnings": warnings,
             "suggestions": suggestions,
+            "confidence": confidence,
+            "ambiguities": ambiguities,
+            "open_points": open_points,
+            "selected_table_names": selected_table_names,
             "confirmed": bool(confirmed),
             "confirmation_required": bool(confirmation_required),
         }
@@ -558,6 +863,22 @@ class QuerySessionService:
             "warnings": list(derived_execution_guard.get("warnings") or []),
             "estimated_cost": derived_execution_guard.get("estimated_cost"),
             "ir": derived_execution_guard.get("ir") or state.get("ir_snapshot"),
+        }
+
+    @staticmethod
+    def _build_result_actions(
+        current_node: Optional[str],
+        raw_pending_actions: list[str],
+    ) -> Optional[Dict[str, Any]]:
+        if current_node not in RESULT_ACTION_NODES:
+            return None
+
+        action_bindings = {action_type: action_type for action_type in raw_pending_actions}
+        return {
+            "source_node": current_node,
+            "available_actions": list(raw_pending_actions),
+            "action_bindings": dict(action_bindings),
+            "raw_pending_actions": list(raw_pending_actions),
         }
 
     @staticmethod
@@ -591,6 +912,10 @@ class QuerySessionService:
             "draft": draft,
             "execution_guard": QuerySessionService._build_execution_guard(current_node, state),
             "pending_actions": pending_actions,
+            "result_actions": QuerySessionService._build_result_actions(
+                current_node,
+                raw_pending_actions,
+            ),
             "dependency_meta": {
                 "draft_version": state.get("draft_version"),
                 "selected_table_ids": selected_table_ids,
@@ -636,6 +961,24 @@ class QuerySessionService:
                 WHERE query_id = $1
                 """,
                 query_id,
+            )
+        return self._row_to_dict(row)
+
+    async def get_latest_pending_session_for_conversation(self, conversation_id: UUID) -> Optional[Dict[str, Any]]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT query_id, conversation_id, message_id, user_id, status, current_node,
+                       state_json, last_error, created_at, updated_at
+                FROM query_sessions
+                WHERE conversation_id = $1
+                  AND status = 'awaiting_user_action'
+                  AND current_node = ANY($2::text[])
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                conversation_id,
+                list(PENDING_USER_ACTION_NODES),
             )
         return self._row_to_dict(row)
 

@@ -13,6 +13,7 @@ from server.middleware.auth import get_current_active_user
 from server.models.admin import User as AdminUser
 from server.services.conversation_service import ConversationService, ActiveQueryRegistry
 from server.services.followup_context_service import FollowupContextService
+from server.services.query_session_service import QuerySessionService
 from server.utils.db_pool import get_metadata_pool
 
 logger = structlog.get_logger()
@@ -82,6 +83,7 @@ class ConversationDetailResponse(BaseModel):
     """会话详情响应（包含消息）"""
     conversation: ConversationResponse
     messages: List[MessageResponse]
+    active_query_session: Optional[Dict[str, Any]] = None
 
 
 class FollowupContextResolutionRequest(BaseModel):
@@ -278,10 +280,14 @@ async def get_conversation(
         conversation_id=UUID(conversation_id),
         include_result_data=include_result_data
     )
+    active_query_session = await QuerySessionService(db).get_latest_pending_session_for_conversation(
+        UUID(conversation_id)
+    )
     
     return ConversationDetailResponse(
         conversation=ConversationResponse(**conversation),
-        messages=[MessageResponse(**m) for m in messages]
+        messages=[MessageResponse(**m) for m in messages],
+        active_query_session=active_query_session,
     )
 
 

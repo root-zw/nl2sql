@@ -100,6 +100,10 @@ class ConfirmationCard(BaseModel):
     """确认卡（IR生成后的意图确认）"""
     ir: IntermediateRepresentation
     natural_language: str  # 意图复述
+    confidence: Optional[float] = None
+    ambiguities: List[str] = []
+    open_points: List[str] = []
+    selected_table_names: List[str] = []
     
     # 可调整的 Chips
     suggestions: List[Dict[str, Any]] = []  # 如 [{"label": "改为最近7天", "modify": {"time.last_n": 7}}]
@@ -158,12 +162,17 @@ class QuerySessionActionRequest(BaseModel):
     """查询会话动作请求"""
     action_type: Optional[Literal[
         "confirm",
+        "choose_table",
+        "confirm_draft",
         "revise",
         "change_table",
+        "manual_select_table",
         "choose_option",
         "request_explanation",
         "execution_decision",
+        "approve_execution",
         "exit_current",
+        "cancel_query",
     ]] = None
     payload: Dict[str, Any] = Field(default_factory=dict)
     natural_language_reply: Optional[str] = None

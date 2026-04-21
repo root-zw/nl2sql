@@ -16,8 +16,18 @@ def ir_to_display_dict(ir: IntermediateRepresentation, semantic_model) -> Dict[s
         return {}
 
     def resolve_field(field_id: str) -> str:
-        if not semantic_model or not field_id:
-            return str(field_id) if field_id else field_id
+        if not field_id:
+            return field_id
+
+        field_id = str(field_id)
+        if field_id == "__row_count__":
+            return "记录数"
+        if field_id.startswith("derived:"):
+            derived_name = field_id[8:].strip()
+            return derived_name or field_id
+
+        if not semantic_model:
+            return field_id
         fields = getattr(semantic_model, "fields", {}) or {}
         if field_id in fields:
             field = fields[field_id]

@@ -66,6 +66,16 @@ _cancel_check_queries: Dict[str, bool] = {}
 _message_id_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar('message_id', default=None)
 _query_id_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("query_id", default=None)
 
+# 结果态当前只下发有明确产品语义的动作。
+# `exit_current` 在现有结果后追问路由里不会影响后续上下文继承，因此暂不暴露到结果态契约。
+RESULT_SESSION_PENDING_ACTIONS = ["change_table", "revise", "request_explanation"]
+RUNNING_QUERY_PENDING_ACTIONS = ["change_table", "request_explanation", "exit_current"]
+PENDING_QUERY_SESSION_NODES = {"table_resolution", "execution_guard", "draft_confirmation"}
+CONFIRMATION_MODE_LABELS = {
+    "adaptive": "智能确认",
+    "always_confirm": "始终确认",
+}
+
 # ============================================================
 # 从拆分模块导入
 # ============================================================
@@ -108,9 +118,13 @@ from .derived_metrics import (
     build_derived_metrics_explanation as _build_derived_metrics_explanation,
 )
 from .confirmation_utils import (
+    apply_analysis_context_to_ir as _apply_analysis_context_to_ir,
+    build_draft_confirmation_open_points as _build_draft_confirmation_open_points,
     build_draft_confirmation_summary as _build_draft_confirmation_summary,
+    build_safe_summary as _build_safe_summary,
     compose_question_with_revision as _compose_question_with_revision,
     resolve_confirmation_mode as _resolve_confirmation_mode,
+    should_pause_for_draft_confirmation as _should_pause_for_draft_confirmation,
 )
 
 logger = structlog.get_logger()
@@ -156,6 +170,36 @@ def _extract_analysis_table_ids(analysis_context: Optional[Dict[str, Any]]) -> L
         return []
     table_ids = base_refs[0].get("table_ids") or []
     return [str(table_id) for table_id in table_ids if table_id]
+
+
+def _get_confirmation_mode_label(mode: Optional[str]) -> Optional[str]:
+    if not mode:
+        return None
+    return CONFIRMATION_MODE_LABELS.get(str(mode))
+
+
+def _merge_thinking_steps(
+    existing_steps: Optional[List[Dict[str, Any]]],
+    new_steps: Optional[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    merged_steps: List[Dict[str, Any]] = []
+    for step in list(existing_steps or []) + list(new_steps or []):
+        step_name = str(step.get("step") or "").strip()
+        if not step_name:
+            continue
+        normalized_step = {
+            "step": step_name,
+            "content": step.get("content") or "",
+            "done": bool(step.get("done")),
+            "status": step.get("status") or "started",
+        }
+        for index, existing in enumerate(merged_steps):
+            if existing.get("step") == step_name:
+                merged_steps[index] = normalized_step
+                break
+        else:
+            merged_steps.append(normalized_step)
+    return sanitize_for_json(merged_steps)
 
 
 def _compose_question_with_analysis_context(
@@ -263,6 +307,105 @@ async def _load_table_display_names(table_ids: List[str]) -> List[str]:
         if row.get("display_name")
     }
     return [name_map[str(table_id)] for table_id in table_ids if str(table_id) in name_map]
+
+
+def _append_unit_to_display_name(display_name: str, unit: Optional[str]) -> str:
+    normalized_name = str(display_name or "").strip()
+    normalized_unit = str(unit or "").strip()
+    if not normalized_name or not normalized_unit:
+        return normalized_name
+    if normalized_unit in normalized_name:
+        return normalized_name
+    return f"{normalized_name}（{normalized_unit}）"
+
+
+def _extract_metric_item_identity(metric_item: Any) -> Tuple[str, Optional[str]]:
+    if isinstance(metric_item, str):
+        return metric_item, None
+    if isinstance(metric_item, dict):
+        return str(metric_item.get("field", metric_item)), metric_item.get("alias")
+    if hasattr(metric_item, "field"):
+        return str(metric_item.field), getattr(metric_item, "alias", None)
+    return str(metric_item), None
+
+
+async def _load_derived_metric_unit_map(connection_id: Optional[str]) -> Dict[str, str]:
+    if not connection_id:
+        return {}
+
+    from server.dependencies import get_global_rules_loader
+
+    rules_loader = get_global_rules_loader(connection_id)
+    if not rules_loader:
+        return {}
+
+    try:
+        global_rules = await rules_loader.load_active_rules(
+            rule_types=["derived_metric"],
+            domain_id=None,
+        )
+    except Exception as exc:
+        logger.warning("加载派生指标单位失败", connection_id=connection_id, error=str(exc))
+        return {}
+
+    derived_units: Dict[str, str] = {}
+    for rule in global_rules:
+        rule_def = rule.get("rule_definition") or {}
+        display_name = str(rule_def.get("display_name") or "").strip()
+        unit = str(rule_def.get("unit") or "").strip()
+        if display_name and unit:
+            derived_units[display_name] = unit
+    return derived_units
+
+
+async def _build_ir_display_dict_with_units(
+    ir: IntermediateRepresentation,
+    semantic_model,
+    connection_id: Optional[str],
+) -> Dict[str, Any]:
+    ir_display = _ir_to_display_dict(ir, semantic_model)
+    if not ir_display:
+        return ir_display
+
+    derived_metric_units = await _load_derived_metric_unit_map(connection_id)
+    display_metrics: List[str] = []
+
+    for index, metric_item in enumerate(list(ir.metrics or [])):
+        metric_id, metric_alias = _extract_metric_item_identity(metric_item)
+        base_display_name = ""
+        if index < len(ir_display.get("metrics") or []):
+            base_display_name = str(ir_display["metrics"][index] or "").strip()
+        if not base_display_name:
+            base_display_name = metric_alias or metric_id
+
+        metric_unit = ""
+        if metric_id == "__row_count__":
+            metric_unit = "条"
+        elif isinstance(metric_id, str) and metric_id.startswith("derived:"):
+            derived_name = metric_id.replace("derived:", "", 1).strip()
+            metric_unit = derived_metric_units.get(derived_name, "")
+        elif semantic_model:
+            metrics_map = getattr(semantic_model, "metrics", {}) or {}
+            fields_map = getattr(semantic_model, "fields", {}) or {}
+            measures_map = getattr(semantic_model, "measures", {}) or {}
+
+            metric_obj = metrics_map.get(metric_id)
+            field_obj = fields_map.get(metric_id) or measures_map.get(metric_id)
+
+            if metric_obj is not None:
+                metric_unit = getattr(metric_obj, "unit", None) or ""
+            if not metric_unit and field_obj is not None:
+                if getattr(field_obj, "measure_props", None):
+                    metric_unit = getattr(field_obj.measure_props, "unit", None) or ""
+                if not metric_unit and getattr(field_obj, "unit_conversion", None):
+                    metric_unit = field_obj.unit_conversion.get("display_unit", "")
+                if not metric_unit:
+                    metric_unit = getattr(field_obj, "unit", None) or ""
+
+        display_metrics.append(_append_unit_to_display_name(base_display_name, metric_unit))
+
+    ir_display["metrics"] = display_metrics
+    return ir_display
 
 
 async def _check_stop_signal(step_name: str = ""):
@@ -657,7 +800,7 @@ async def query(
 
     stream = _stream_emitter_ctx.get(None)
 
-    query_id = request.original_query_id or _query_id_ctx.get() or str(uuid.uuid4())
+    query_id = _query_id_ctx.get() or request.original_query_id or str(uuid.uuid4())
     timestamp = to_isoformat(now_with_tz())
     start_time = time.time()  # 记录开始时间
     result_streamed = False
@@ -677,11 +820,13 @@ async def query(
         settings.confirmation_mode,
     )
     revision_request = existing_state.get("revision_request")
+    existing_requires_draft_confirmation = QuerySessionService.requires_draft_confirmation(existing_state)
+    existing_has_confirmed_draft = QuerySessionService.has_confirmed_draft(existing_state)
     analysis_context = sanitize_for_json(request.analysis_context) if request.analysis_context else None
     followup_resolution = request.followup_resolution
     if request.ir and existing_state.get("resolved_question_text"):
         effective_question_text = existing_state.get("resolved_question_text")
-    elif request.text and existing_state.get("draft_confirmation_required"):
+    elif request.text and revision_request and existing_requires_draft_confirmation and not existing_has_confirmed_draft:
         effective_question_text = _compose_question_with_revision(request.text, revision_request)
     else:
         effective_question_text = request.text
@@ -717,6 +862,164 @@ async def query(
     if not initial_selected_table_ids:
         initial_selected_table_ids = _extract_analysis_table_ids(analysis_context)
 
+    initial_query_session_state = {
+        "question_text": request.text,
+        "resolved_question_text": effective_question_text,
+        "confirmation_mode": confirmation_mode,
+        "pending_actions": RUNNING_QUERY_PENDING_ACTIONS if initial_selected_table_ids else [],
+        "selected_table_ids": initial_selected_table_ids,
+        "analysis_context": analysis_context,
+        "followup_resolution": followup_resolution,
+        "safe_summary": _build_safe_summary(
+            question_text=request.text or existing_state.get("question_text"),
+            analysis_context=analysis_context or existing_state.get("analysis_context"),
+            domain_hint=request.domain_id or existing_state.get("domain_name") or existing_state.get("domain_id"),
+        ),
+        "request_context": {
+            "connection_id": request.connection_id,
+            "domain_id": request.domain_id,
+            "skip_cache": request.skip_cache,
+            "force_execute": request.force_execute,
+            "explain_only": request.explain_only,
+            "confirmation_mode": confirmation_mode,
+            "followup_resolution": followup_resolution,
+        },
+    }
+
+    def _stringify_uuid(value: Optional[UUID]) -> Optional[str]:
+        return str(value) if value else None
+
+    def _iter_query_session_identity_variants() -> List[Dict[str, Optional[UUID]]]:
+        seen: Set[Tuple[Optional[UUID], Optional[UUID], Optional[UUID]]] = set()
+        variants: List[Dict[str, Optional[UUID]]] = []
+
+        def _append_variant(
+            label: str,
+            user_id: Optional[UUID],
+            conversation_id: Optional[UUID],
+            message_id: Optional[UUID],
+        ) -> None:
+            key = (user_id, conversation_id, message_id)
+            if key in seen:
+                return
+            seen.add(key)
+            variants.append(
+                {
+                    "label": label,
+                    "user_id": user_id,
+                    "conversation_id": conversation_id,
+                    "message_id": message_id,
+                }
+            )
+
+        _append_variant("full", session_user_id, session_conversation_id, session_message_id)
+        if session_message_id is not None:
+            _append_variant("without_message", session_user_id, session_conversation_id, None)
+        if session_user_id is not None:
+            _append_variant("without_user", None, session_conversation_id, session_message_id)
+        if session_user_id is not None and session_message_id is not None:
+            _append_variant("without_user_and_message", None, session_conversation_id, None)
+        if any(value is not None for value in (session_user_id, session_conversation_id, session_message_id)):
+            _append_variant("detached", None, None, None)
+
+        return variants
+
+    async def _persist_query_session(
+        *,
+        status: Optional[str],
+        current_node: Optional[str],
+        state_updates: Optional[Dict[str, Any]] = None,
+        last_error: Optional[str] = None,
+        prefer_upsert: bool,
+    ) -> Optional[Dict[str, Any]]:
+        resolved_status = status or "running"
+        resolved_current_node = current_node or "question_intake"
+        create_state = (
+            QuerySessionService._merge_state(initial_query_session_state, state_updates)
+            if not prefer_upsert
+            else state_updates
+        )
+
+        for variant in _iter_query_session_identity_variants():
+            label = str(variant["label"])
+            variant_user_id = variant["user_id"]
+            variant_conversation_id = variant["conversation_id"]
+            variant_message_id = variant["message_id"]
+            try:
+                if prefer_upsert:
+                    row = await query_session_service.upsert_session(
+                        query_id=UUID(query_id),
+                        user_id=variant_user_id,
+                        conversation_id=variant_conversation_id,
+                        message_id=variant_message_id,
+                        status=resolved_status,
+                        current_node=resolved_current_node,
+                        state_json=state_updates,
+                        last_error=last_error,
+                    )
+                else:
+                    row = await query_session_service.update_session(
+                        UUID(query_id),
+                        status=status,
+                        current_node=current_node,
+                        state_updates=state_updates,
+                        conversation_id=variant_conversation_id,
+                        message_id=variant_message_id,
+                        last_error=last_error,
+                    )
+                    if row is None:
+                        logger.warning(
+                            "query_sessions 记录缺失，改为补建",
+                            query_id=query_id,
+                            variant=label,
+                            status=status,
+                            current_node=current_node,
+                        )
+                        row = await query_session_service.upsert_session(
+                            query_id=UUID(query_id),
+                            user_id=variant_user_id,
+                            conversation_id=variant_conversation_id,
+                            message_id=variant_message_id,
+                            status=resolved_status,
+                            current_node=resolved_current_node,
+                            state_json=create_state,
+                            last_error=last_error,
+                        )
+
+                if label != "full":
+                    logger.warning(
+                        "query_sessions 使用降级身份信息写入成功",
+                        query_id=query_id,
+                        variant=label,
+                        status=resolved_status,
+                        current_node=resolved_current_node,
+                        user_id=_stringify_uuid(variant_user_id),
+                        conversation_id=_stringify_uuid(variant_conversation_id),
+                        message_id=_stringify_uuid(variant_message_id),
+                    )
+                return row
+            except Exception as exc:
+                logger.warning(
+                    "query_sessions 持久化失败，准备降级重试",
+                    query_id=query_id,
+                    variant=label,
+                    status=resolved_status,
+                    current_node=resolved_current_node,
+                    user_id=_stringify_uuid(variant_user_id),
+                    conversation_id=_stringify_uuid(variant_conversation_id),
+                    message_id=_stringify_uuid(variant_message_id),
+                    error=str(exc),
+                )
+
+        logger.error(
+            "query_sessions 持久化最终失败",
+            query_id=query_id,
+            status=resolved_status,
+            current_node=resolved_current_node,
+            prefer_upsert=prefer_upsert,
+        )
+        return None
+
     async def _write_query_session(
         *,
         status: str,
@@ -724,19 +1027,13 @@ async def query(
         state_updates: Optional[Dict[str, Any]] = None,
         last_error: Optional[str] = None,
     ) -> None:
-        try:
-            await query_session_service.upsert_session(
-                query_id=UUID(query_id),
-                user_id=session_user_id,
-                conversation_id=session_conversation_id,
-                message_id=session_message_id,
-                status=status,
-                current_node=current_node,
-                state_json=state_updates,
-                last_error=last_error,
-            )
-        except Exception as exc:
-            logger.warning("写入 query_sessions 失败", query_id=query_id, error=str(exc))
+        await _persist_query_session(
+            status=status,
+            current_node=current_node,
+            state_updates=state_updates,
+            last_error=last_error,
+            prefer_upsert=True,
+        )
 
     async def _update_query_session(
         *,
@@ -745,26 +1042,37 @@ async def query(
         state_updates: Optional[Dict[str, Any]] = None,
         last_error: Optional[str] = None,
     ) -> None:
-        try:
-            await query_session_service.update_session(
-                UUID(query_id),
-                status=status,
-                current_node=current_node,
-                state_updates=state_updates,
-                conversation_id=session_conversation_id,
-                message_id=session_message_id,
-                last_error=last_error,
-            )
-        except Exception as exc:
-            logger.warning("更新 query_sessions 失败", query_id=query_id, error=str(exc))
+        await _persist_query_session(
+            status=status,
+            current_node=current_node,
+            state_updates=state_updates,
+            last_error=last_error,
+            prefer_upsert=False,
+        )
 
-    async def _return_query_response(
+    async def _emit_pending_stream(
+        stream_event: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not stream_event:
+            return
+        event_type = stream_event.get("type")
+        payload = stream_event.get("payload")
+        if event_type == "confirmation":
+            await _stream_confirmation(stream, payload)
+            return
+        if event_type == "table_selection":
+            await _stream_table_selection(stream, payload, query_id)
+            return
+        logger.warning("未知的待确认流事件类型", query_id=query_id, event_type=event_type)
+
+    async def _return_streamed_query_response(
         response: QueryResponse,
         *,
         status: str,
         current_node: str,
         state_updates: Optional[Dict[str, Any]] = None,
         last_error: Optional[str] = None,
+        stream_event: Optional[Dict[str, Any]] = None,
     ):
         await _update_query_session(
             status=status,
@@ -772,6 +1080,7 @@ async def query(
             state_updates=state_updates,
             last_error=last_error,
         )
+        await _emit_pending_stream(stream_event)
         try:
             await _emit_query_outcome_event(
                 query_id=query_id,
@@ -790,6 +1099,22 @@ async def query(
         except Exception as exc:
             logger.warning("写入查询结果事件失败", query_id=query_id, status=status, error=str(exc))
         return response
+
+    async def _return_query_response(
+        response: QueryResponse,
+        *,
+        status: str,
+        current_node: str,
+        state_updates: Optional[Dict[str, Any]] = None,
+        last_error: Optional[str] = None,
+    ):
+        return await _return_streamed_query_response(
+            response,
+            status=status,
+            current_node=current_node,
+            state_updates=state_updates,
+            last_error=last_error,
+        )
 
     async def _return_json_query_response(
         response: QueryResponse,
@@ -830,24 +1155,7 @@ async def query(
     await _write_query_session(
         status="running",
         current_node="question_intake",
-        state_updates={
-            "question_text": request.text,
-            "resolved_question_text": effective_question_text,
-            "confirmation_mode": confirmation_mode,
-            "pending_actions": [],
-            "selected_table_ids": initial_selected_table_ids,
-            "analysis_context": analysis_context,
-            "followup_resolution": followup_resolution,
-            "request_context": {
-                "connection_id": request.connection_id,
-                "domain_id": request.domain_id,
-                "skip_cache": request.skip_cache,
-                "force_execute": request.force_execute,
-                "explain_only": request.explain_only,
-                "confirmation_mode": confirmation_mode,
-                "followup_resolution": followup_resolution,
-            },
-        },
+        state_updates=initial_query_session_state,
     )
 
     # 创建或恢复查询追踪器
@@ -959,10 +1267,18 @@ async def query(
                         tracer.finalize({"status": "table_selection_needed"}, save_to_file=False)
                         pending_response = table_selection_result.get("response")
                         pending_card = pending_response.table_selection if pending_response else None
-                        await _update_query_session(
+                        return await _return_streamed_query_response(
+                            pending_response,
                             status="awaiting_user_action",
                             current_node="table_resolution",
                             state_updates={
+                                "__delete_keys__": [
+                                    "candidate_snapshot",
+                                    "draft_state",
+                                    "draft_confirmation_card",
+                                    "draft_confirmation_required",
+                                    "draft_confirmation_approved",
+                                ],
                                 "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
                                 "table_resolution_state": QuerySessionService.build_table_resolution_state(
                                     pending_card,
@@ -979,8 +1295,8 @@ async def query(
                                 "recommended_table_ids": list(getattr(pending_card, "recommended_table_ids", []) or []),
                                 "selected_table_ids": selected_table_ids,
                             },
+                            stream_event={"type": "table_selection", "payload": pending_card},
                         )
-                        return pending_response
                     elif table_selection_result.get("status") == "success":
                         effective_selected_table_id = table_selection_result.get("selected_table_id")
                         candidate_snapshot = table_selection_result.get("candidate_snapshot")
@@ -1050,10 +1366,18 @@ async def query(
                     tracer.finalize({"status": "table_selection_needed"}, save_to_file=False)
                     pending_response = table_selection_result.get("response")
                     pending_card = pending_response.table_selection if pending_response else None
-                    await _update_query_session(
+                    return await _return_streamed_query_response(
+                        pending_response,
                         status="awaiting_user_action",
                         current_node="table_resolution",
                         state_updates={
+                            "__delete_keys__": [
+                                "candidate_snapshot",
+                                "draft_state",
+                                "draft_confirmation_card",
+                                "draft_confirmation_required",
+                                "draft_confirmation_approved",
+                            ],
                             "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
                             "table_resolution_state": QuerySessionService.build_table_resolution_state(
                                 pending_card,
@@ -1070,8 +1394,8 @@ async def query(
                             "recommended_table_ids": list(getattr(pending_card, "recommended_table_ids", []) or []),
                             "selected_table_ids": selected_table_ids,
                         },
+                        stream_event={"type": "table_selection", "payload": pending_card},
                     )
-                    return pending_response
                 elif table_selection_result.get("status") == "success":
                     actual_connection_id = table_selection_result.get("connection_id")
                     effective_selected_table_id = table_selection_result.get("selected_table_id")
@@ -1164,10 +1488,18 @@ async def query(
             tracer.finalize({"status": "table_selection_needed"}, save_to_file=False)
             pending_response = table_selection_result.get("response")
             pending_card = pending_response.table_selection if pending_response else None
-            await _update_query_session(
+            return await _return_streamed_query_response(
+                pending_response,
                 status="awaiting_user_action",
                 current_node="table_resolution",
                 state_updates={
+                    "__delete_keys__": [
+                        "candidate_snapshot",
+                        "draft_state",
+                        "draft_confirmation_card",
+                        "draft_confirmation_required",
+                        "draft_confirmation_approved",
+                    ],
                     "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
                     "table_resolution_state": QuerySessionService.build_table_resolution_state(
                         pending_card,
@@ -1184,8 +1516,8 @@ async def query(
                     "recommended_table_ids": list(getattr(pending_card, "recommended_table_ids", []) or []),
                     "selected_table_ids": selected_table_ids,
                 },
+                stream_event={"type": "table_selection", "payload": pending_card},
             )
-            return pending_response
         elif table_selection_result.get("status") == "success":
             effective_selected_table_id = table_selection_result.get("selected_table_id")
             candidate_snapshot = table_selection_result.get("candidate_snapshot")
@@ -1237,6 +1569,14 @@ async def query(
     # 更新 tracer 的 connection_id
     tracer.connection_id = actual_connection_id
     table_resolution_state_updates = {
+        "__delete_keys__": [
+            "candidate_snapshot",
+            "draft_state",
+            "draft_confirmation_card",
+            "draft_confirmation_required",
+            "draft_confirmation_approved",
+        ],
+        "pending_actions": RUNNING_QUERY_PENDING_ACTIONS,
         "connection_id": actual_connection_id,
         "selected_table_ids": selected_table_ids,
         "selected_table_id": effective_selected_table_id,
@@ -2065,8 +2405,7 @@ async def query(
                                     "candidate_count": len(fallback_card.candidates),
                                     "fallback_reason": "ir_vote_failed"
                                 })
-                                await _stream_table_selection(stream, fallback_card, query_id)
-                                
+
                                 tracer.finalize({
                                     "status": "table_selection_needed",
                                     "action": "vector_fallback",
@@ -2079,10 +2418,18 @@ async def query(
                                     query_id=query_id,
                                     timestamp=timestamp
                                 )
-                                await _update_query_session(
+                                return await _return_streamed_query_response(
+                                    pending_response,
                                     status="awaiting_user_action",
                                     current_node="table_resolution",
                                     state_updates={
+                                        "__delete_keys__": [
+                                            "candidate_snapshot",
+                                            "draft_state",
+                                            "draft_confirmation_card",
+                                            "draft_confirmation_required",
+                                            "draft_confirmation_approved",
+                                        ],
                                         "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
                                         "table_resolution_state": QuerySessionService.build_table_resolution_state(
                                             fallback_card,
@@ -2099,8 +2446,8 @@ async def query(
                                         "recommended_table_ids": list(fallback_card.recommended_table_ids or []),
                                         "selected_table_ids": selected_table_ids,
                                     },
+                                    stream_event={"type": "table_selection", "payload": fallback_card},
                                 )
-                                return pending_response
                                     
                             else:
                                 # IR投票未通过 + 低置信度：同样降级到表选择确认流程
@@ -2123,8 +2470,7 @@ async def query(
                                     "candidate_count": len(fallback_card.candidates),
                                     "fallback_reason": "low_confidence"
                                 })
-                                await _stream_table_selection(stream, fallback_card, query_id)
-                                
+
                                 tracer.finalize({
                                     "status": "table_selection_needed",
                                     "action": "vector_fallback",
@@ -2137,10 +2483,18 @@ async def query(
                                     query_id=query_id,
                                     timestamp=timestamp
                                 )
-                                await _update_query_session(
+                                return await _return_streamed_query_response(
+                                    pending_response,
                                     status="awaiting_user_action",
                                     current_node="table_resolution",
                                     state_updates={
+                                        "__delete_keys__": [
+                                            "candidate_snapshot",
+                                            "draft_state",
+                                            "draft_confirmation_card",
+                                            "draft_confirmation_required",
+                                            "draft_confirmation_approved",
+                                        ],
                                         "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
                                         "table_resolution_state": QuerySessionService.build_table_resolution_state(
                                             fallback_card,
@@ -2157,8 +2511,8 @@ async def query(
                                         "recommended_table_ids": list(fallback_card.recommended_table_ids or []),
                                         "selected_table_ids": selected_table_ids,
                                     },
+                                    stream_event={"type": "table_selection", "payload": fallback_card},
                                 )
-                                return pending_response
                         
                 except Exception as e:
                     logger.exception("向量表选择失败", error=str(e))
@@ -2246,6 +2600,7 @@ async def query(
                     is_cross_partition_query=is_cross_partition_query,  # 跨分区查询标志
                     cross_partition_mode=cross_partition_mode  # 跨分区模式（compare/union/multi_join）
                 )
+                ir = _apply_analysis_context_to_ir(ir, analysis_context or existing_state.get("analysis_context"))
                 logger.debug("NL→IR 解析完成", confidence=confidence, domain=ir.domain_name)
 
                 # 添加LLM提示词到metadata（用于调试）
@@ -2280,7 +2635,7 @@ async def query(
 
                 # 输出可读版IR
                 step.set_output({
-                    "ir_display": _ir_to_display_dict(ir, semantic_model),
+                    "ir_display": await _build_ir_display_dict_with_units(ir, semantic_model, actual_connection_id),
                     "confidence": confidence,
                     "domain": ir.domain_name
                 })
@@ -2462,7 +2817,7 @@ async def query(
         if validation_loop is None:
             validation_loop = get_validation_loop()
         ir = await validation_loop.align_ir(ir, actual_connection_id)
-        current_ir_display = _ir_to_display_dict(ir, semantic_model)
+        current_ir_display = await _build_ir_display_dict_with_units(ir, semantic_model, actual_connection_id)
 
         # 2.55 表/列权限校验（需先完成IR校正）
         await _enforce_schema_permissions(
@@ -2475,13 +2830,30 @@ async def query(
             stream
         )
 
-        should_pause_for_draft_confirmation = (
-            not request.ir
-            and (
-                confirmation_mode == "always_confirm"
-                or bool(existing_state.get("draft_confirmation_required"))
-            )
-            and not bool(existing_state.get("draft_confirmation_approved"))
+        resolved_ir_confidence: Optional[float] = None
+        try:
+            if getattr(ir, "confidence", None) is not None:
+                resolved_ir_confidence = float(ir.confidence)
+            elif confidence is not None:
+                resolved_ir_confidence = float(confidence)
+        except (TypeError, ValueError):
+            resolved_ir_confidence = None
+
+        ir_ambiguities = [str(item).strip() for item in list(getattr(ir, "ambiguities", []) or []) if str(item).strip()]
+        draft_confirmation_open_points = _build_draft_confirmation_open_points(
+            confidence=resolved_ir_confidence,
+            confidence_threshold=settings.confirm_low_confidence_threshold,
+            ambiguities=ir_ambiguities,
+            revision_request=existing_state.get("revision_request"),
+        )
+        should_pause_for_draft_confirmation = _should_pause_for_draft_confirmation(
+            confirmation_mode=confirmation_mode,
+            request_has_ir=bool(request.ir),
+            existing_requires_draft_confirmation=existing_requires_draft_confirmation,
+            existing_has_confirmed_draft=existing_has_confirmed_draft,
+            confidence=resolved_ir_confidence,
+            ambiguities=ir_ambiguities,
+            confidence_threshold=settings.confirm_low_confidence_threshold,
         )
         if should_pause_for_draft_confirmation:
             selected_table_names: List[str] = []
@@ -2496,6 +2868,16 @@ async def query(
                 draft_warnings.append(f"本次草稿基于 {len(selected_table_ids)} 张表的联合查询。")
             if existing_state.get("revision_request"):
                 draft_warnings.append("已按您刚才的修改意见重算当前草稿。")
+            if (
+                confirmation_mode == "adaptive"
+                and resolved_ir_confidence is not None
+                and resolved_ir_confidence < settings.confirm_low_confidence_threshold
+            ):
+                draft_warnings.append(
+                    f"当前语义理解置信度 {resolved_ir_confidence:.0%}，低于自动放行阈值 {settings.confirm_low_confidence_threshold:.0%}。"
+                )
+            if ir_ambiguities:
+                draft_warnings.append(f"当前仍有 {len(ir_ambiguities)} 个待确认语义点。")
 
             confirm_card = ConfirmationCard(
                 ir=ir,
@@ -2504,6 +2886,10 @@ async def query(
                     selected_table_names=selected_table_names,
                     revision_request=existing_state.get("revision_request"),
                 ),
+                confidence=resolved_ir_confidence,
+                ambiguities=ir_ambiguities,
+                open_points=draft_confirmation_open_points,
+                selected_table_names=selected_table_names,
                 warnings=draft_warnings,
             )
 
@@ -2515,12 +2901,18 @@ async def query(
                 query_id=query_id,
                 timestamp=timestamp,
             )
-            await _stream_confirmation(stream, confirm_card)
-            return await _return_query_response(
+            return await _return_streamed_query_response(
                 response,
                 status="awaiting_user_action",
                 current_node="draft_confirmation",
                 state_updates={
+                    "__delete_keys__": [
+                        "candidate_snapshot",
+                        "draft_state",
+                        "draft_confirmation_card",
+                        "draft_confirmation_required",
+                        "draft_confirmation_approved",
+                    ],
                     "pending_actions": ["confirm", "revise", "change_table", "request_explanation", "exit_current"],
                     "provisional_draft": QuerySessionService.build_provisional_draft_state(
                         confirm_card,
@@ -2529,16 +2921,26 @@ async def query(
                         draft_json=sanitize_for_json(ir.model_dump()),
                         warnings=list(confirm_card.warnings or []),
                         suggestions=list(confirm_card.suggestions or []),
+                        confidence=confirm_card.confidence,
+                        ambiguities=list(confirm_card.ambiguities or []),
+                        open_points=list(confirm_card.open_points or []),
+                        selected_table_names=list(confirm_card.selected_table_names or []),
                     ),
                     "confirmed_draft": None,
-                    "draft_state": None,
                     "ir_snapshot": sanitize_for_json(ir.model_dump()),
                     "ir_ready": True,
                     "selected_table_ids": selected_table_ids,
                     "selected_table_id": effective_selected_table_id,
-                    "draft_confirmation_required": False,
-                    "draft_confirmation_approved": False,
+                    "safe_summary": _build_safe_summary(
+                        question_text=request.text or existing_state.get("question_text"),
+                        analysis_context=analysis_context or existing_state.get("analysis_context"),
+                        domain_hint=ir.domain_name or request.domain_id or existing_state.get("domain_name") or existing_state.get("domain_id"),
+                        selected_table_names=selected_table_names,
+                        ir_display=current_ir_display,
+                        open_points=draft_confirmation_open_points,
+                    ),
                 },
+                stream_event={"type": "confirmation", "payload": confirm_card},
             )
 
         # 2.6 权限过滤注入（如果用户已认证且启用RLS）
@@ -2794,7 +3196,7 @@ async def query(
                 
                 if final_ir:
                     ir = final_ir
-                    current_ir_display = _ir_to_display_dict(ir, semantic_model)
+                    current_ir_display = await _build_ir_display_dict_with_units(ir, semantic_model, actual_connection_id)
                 
                 is_complex_executed = True
                 logger.debug("复杂查询自动执行成功", plan_id=dag_plan.plan_id)
@@ -2916,11 +3318,18 @@ async def query(
                             status="completed",
                             current_node="completed",
                             state_updates={
+                                "pending_actions": RESULT_SESSION_PENDING_ACTIONS,
                                 "cache_hit": True,
                                 "ir_ready": True,
                                 "selected_table_ids": selected_table_ids,
                                 "selected_table_id": effective_selected_table_id,
                                 "ir_snapshot": sanitize_for_json(ir.model_dump()) if hasattr(ir, "model_dump") else None,
+                                "safe_summary": _build_safe_summary(
+                                    question_text=request.text or existing_state.get("question_text"),
+                                    analysis_context=analysis_context or existing_state.get("analysis_context"),
+                                    domain_hint=ir.domain_name or request.domain_id or existing_state.get("domain_name") or existing_state.get("domain_id"),
+                                    ir_display=current_ir_display,
+                                ),
                             },
                         )
 
@@ -2979,7 +3388,7 @@ async def query(
                 tracer.end_step()
                 raise
 
-            current_ir_display = _ir_to_display_dict(ir, semantic_model)
+            current_ir_display = await _build_ir_display_dict_with_units(ir, semantic_model, actual_connection_id)
             step.set_output({
                 "sql": sql,
                 "sql_length": len(sql),
@@ -3028,11 +3437,18 @@ async def query(
                     status="completed",
                     current_node="ir_ready",
                     state_updates={
+                        "pending_actions": RESULT_SESSION_PENDING_ACTIONS,
                         "ir_ready": True,
                         "selected_table_ids": selected_table_ids,
                         "selected_table_id": effective_selected_table_id,
                         "sql_preview": sql,
                         "ir_snapshot": sanitize_for_json(ir.model_dump()),
+                        "safe_summary": _build_safe_summary(
+                            question_text=request.text or existing_state.get("question_text"),
+                            analysis_context=analysis_context or existing_state.get("analysis_context"),
+                            domain_hint=ir.domain_name or request.domain_id or existing_state.get("domain_name") or existing_state.get("domain_id"),
+                            ir_display=current_ir_display,
+                        ),
                     },
                 )
 
@@ -3079,8 +3495,8 @@ async def query(
                         query_id=query_id,
                         timestamp=timestamp
                     )
-                    await _stream_confirmation(stream, confirm_card)
-                    return await _return_query_response(
+                    current_ir_snapshot = sanitize_for_json(ir.model_dump())
+                    return await _return_streamed_query_response(
                         response,
                         status="awaiting_user_action",
                         current_node="execution_guard",
@@ -3089,11 +3505,23 @@ async def query(
                             "execution_guard_state": QuerySessionService.build_execution_guard_state(
                                 confirm_card,
                                 status="awaiting_confirmation",
-                                ir=sanitize_for_json(ir.model_dump()),
+                                ir=current_ir_snapshot,
                             ),
-                            "ir_snapshot": sanitize_for_json(ir.model_dump()),
+                            "confirmed_draft": QuerySessionService.build_downstream_confirmed_draft_state(
+                                existing_state,
+                                draft_json=current_ir_snapshot,
+                            ),
+                            "ir_snapshot": current_ir_snapshot,
                             "ir_ready": True,
+                            "safe_summary": _build_safe_summary(
+                                question_text=request.text or existing_state.get("question_text"),
+                                analysis_context=analysis_context or existing_state.get("analysis_context"),
+                                domain_hint=ir.domain_name or request.domain_id or existing_state.get("domain_name") or existing_state.get("domain_id"),
+                                ir_display=current_ir_display,
+                                open_points=["需确认是否执行当前查询"],
+                            ),
                         },
+                        stream_event={"type": "confirmation", "payload": confirm_card},
                     )
 
             # 8. 执行查询
@@ -4172,12 +4600,31 @@ async def query(
             status="completed",
             current_node="completed",
             state_updates={
+                "pending_actions": RESULT_SESSION_PENDING_ACTIONS,
                 "ir_ready": True,
                 "selected_table_ids": selected_table_ids,
                 "selected_table_id": effective_selected_table_id,
                 "sql_preview": sql if 'sql' in locals() else None,
                 "ir_snapshot": sanitize_for_json(ir.model_dump()) if 'ir' in locals() and hasattr(ir, "model_dump") else None,
+                "confirmed_draft": QuerySessionService.build_downstream_confirmed_draft_state(
+                    existing_state,
+                    draft_json=(
+                        sanitize_for_json(ir.model_dump())
+                        if 'ir' in locals() and hasattr(ir, "model_dump")
+                        else None
+                    ),
+                ),
                 "result_meta": result.meta if result else None,
+                "safe_summary": _build_safe_summary(
+                    question_text=request.text or existing_state.get("question_text"),
+                    analysis_context=analysis_context or existing_state.get("analysis_context"),
+                    domain_hint=(
+                        ir.domain_name
+                        if 'ir' in locals() and hasattr(ir, "domain_name")
+                        else request.domain_id or existing_state.get("domain_name") or existing_state.get("domain_id")
+                    ),
+                    ir_display=current_ir_display if 'current_ir_display' in locals() else None,
+                ),
             },
         )
     except QueryStoppedException as e:
@@ -4276,7 +4723,28 @@ async def query(
             response,
             status="failed",
             current_node="failed",
-            state_updates={"selected_table_ids": selected_table_ids if 'selected_table_ids' in locals() else []},
+            state_updates={
+                "pending_actions": RESULT_SESSION_PENDING_ACTIONS,
+                "selected_table_ids": selected_table_ids if 'selected_table_ids' in locals() else [],
+                "confirmed_draft": QuerySessionService.build_downstream_confirmed_draft_state(
+                    existing_state,
+                    draft_json=(
+                        sanitize_for_json(ir.model_dump())
+                        if 'ir' in locals() and hasattr(ir, "model_dump")
+                        else None
+                    ),
+                ),
+                "safe_summary": _build_safe_summary(
+                    question_text=request.text or existing_state.get("question_text"),
+                    analysis_context=analysis_context or existing_state.get("analysis_context"),
+                    domain_hint=(
+                        ir.domain_name
+                        if 'ir' in locals() and hasattr(ir, "domain_name")
+                        else request.domain_id or existing_state.get("domain_name") or existing_state.get("domain_id")
+                    ),
+                    ir_display=current_ir_display if 'current_ir_display' in locals() else None,
+                ),
+            },
             last_error=(response.error or {}).get("message") if response.error else str(e),
         )
 
@@ -4294,11 +4762,23 @@ async def get_query_session_snapshot(query_id: str):
         "query_id": session["query_id"],
         "status": session["status"],
         "current_node": session["current_node"],
-        "pending_actions": state.get("pending_actions", []),
         "confirmation_view": confirmation_view,
         "state": state,
         "session": session,
     }
+
+
+def _extract_query_action_message_text(request: QuerySessionActionRequest) -> str:
+    for candidate in (
+        request.natural_language_reply,
+        request.payload.get("text") if request.payload else None,
+        request.payload.get("source_text") if request.payload else None,
+        request.payload.get("question") if request.payload else None,
+        request.payload.get("reason") if request.payload else None,
+    ):
+        if candidate and str(candidate).strip():
+            return str(candidate).strip()
+    return ""
 
 
 @router.post("/query-sessions/{query_id}/actions")
@@ -4327,6 +4807,39 @@ async def submit_query_session_action(
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    persisted_user_reply = _extract_query_action_message_text(request)
+    session_snapshot = result.get("session") or {}
+    conversation_id = session_snapshot.get("conversation_id")
+    if (
+        actor_type == "user"
+        and persisted_user_reply
+        and conversation_id
+        and not result.get("idempotent_replay")
+    ):
+        pool = await get_metadata_pool()
+        conn = await pool.acquire()
+        try:
+            await ConversationService(conn).add_message(
+                conversation_id=UUID(str(conversation_id)),
+                role="user",
+                content=persisted_user_reply,
+                query_id=UUID(query_id),
+                status="completed",
+                metadata={
+                    "query_session_action": result.get("action", {}).get("action_type") or request.action_type,
+                    "query_session_reply": True,
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "持久化确认阶段用户回复失败",
+                query_id=query_id,
+                conversation_id=conversation_id,
+                error=str(exc),
+            )
+        finally:
+            await pool.release(conn)
 
     return result
 
@@ -4373,7 +4886,28 @@ async def query_stream_socket(websocket: WebSocket):
         await emitter.close()
         return
 
+    is_resume_request = bool(request.original_query_id)
     query_id = request.original_query_id or str(uuid.uuid4())
+    existing_query_session: Optional[Dict[str, Any]] = None
+    query_uuid = _try_uuid(query_id)
+    if query_uuid is not None:
+        try:
+            existing_query_session = await QuerySessionService().get_session(query_uuid)
+        except Exception as exc:
+            logger.warning("WebSocket 入口读取既有 query_session 失败", query_id=query_id, error=str(exc))
+
+    effective_confirmation_mode = _resolve_confirmation_mode(
+        request.confirmation_mode,
+        (existing_query_session or {}).get("state_json", {}).get("confirmation_mode"),
+        settings.confirmation_mode,
+    )
+    confirmation_mode_label = _get_confirmation_mode_label(effective_confirmation_mode)
+    request = request.model_copy(
+        update={
+            "original_query_id": query_id,
+            "confirmation_mode": effective_confirmation_mode,
+        }
+    )
     emitter.bind_query(query_id)
 
     # 从WebSocket请求中尝试获取用户信息（如果前端传递了token）
@@ -4454,6 +4988,51 @@ async def query_stream_socket(websocket: WebSocket):
     # 实际使用的 message_id（可能是新创建的占位消息）
     actual_message_id = message_id
     assistant_message_id: Optional[UUID] = None
+    user_message_id: Optional[UUID] = None
+
+    async def _bootstrap_query_session() -> None:
+        session_service = QuerySessionService()
+        try:
+            await session_service.upsert_session(
+                query_id=UUID(query_id),
+                user_id=UUID(str(current_user.user_id)) if current_user else None,
+                conversation_id=UUID(conversation_id) if conversation_id and is_valid_uuid(conversation_id) else None,
+                message_id=assistant_message_id if assistant_message_id else (UUID(message_id) if message_id and is_valid_uuid(message_id) else None),
+                status="running",
+                current_node="question_intake",
+                state_json={
+                    "question_text": request.text,
+                    "resolved_question_text": request.text,
+                    "confirmation_mode": request.confirmation_mode,
+                    "selected_table_ids": request.get_selected_table_ids(),
+                    "analysis_context": sanitize_for_json(request.analysis_context) if request.analysis_context else None,
+                    "followup_resolution": request.followup_resolution,
+                    "request_context": {
+                        "connection_id": request.connection_id,
+                        "domain_id": request.domain_id,
+                        "skip_cache": request.skip_cache,
+                        "force_execute": request.force_execute,
+                        "explain_only": request.explain_only,
+                        "confirmation_mode": request.confirmation_mode,
+                        "followup_resolution": request.followup_resolution,
+                    },
+                    "pending_actions": RUNNING_QUERY_PENDING_ACTIONS if request.get_selected_table_ids() else [],
+                    "safe_summary": _build_safe_summary(
+                        question_text=request.text,
+                        analysis_context=sanitize_for_json(request.analysis_context) if request.analysis_context else None,
+                        domain_hint=request.domain_id,
+                    ),
+                },
+                last_error=None,
+            )
+            logger.info(
+                "WebSocket 入口已初始化 query_session",
+                query_id=query_id,
+                conversation_id=conversation_id,
+                message_id=str(assistant_message_id) if assistant_message_id else message_id,
+            )
+        except Exception as exc:
+            logger.warning("WebSocket 入口初始化 query_session 失败", query_id=query_id, error=str(exc))
 
     # 注册查询到活跃查询表（用于取消功能）
     def is_valid_uuid(val: str) -> bool:
@@ -4471,32 +5050,81 @@ async def query_stream_socket(websocket: WebSocket):
             pool = await get_metadata_pool()
             db_conn = await pool.acquire()
             conv_service = ConversationService(db_conn)
-            
-            # 先保存用户消息
-            user_msg = await conv_service.add_message(
-                conversation_id=UUID(conversation_id),
-                role='user',
-                content=request.text or '',
-                status='completed',
-                query_params={
-                    'connection_id': request.connection_id,
-                    'domain_id': request.domain_id,
-                    'explain_only': request.explain_only,
-                    'force_execute': request.force_execute
-                }
+
+            conversation_uuid = UUID(conversation_id)
+            existing_conversation_id = (existing_query_session or {}).get("conversation_id")
+            existing_message_id = _try_uuid((existing_query_session or {}).get("message_id"))
+            should_reuse_existing_message = (
+                is_resume_request
+                and existing_message_id is not None
+                and str(conversation_uuid) == str(existing_conversation_id)
             )
-            
-            # 创建 assistant 占位消息（状态为 running）
-            assistant_msg = await conv_service.create_placeholder_message(
-                conversation_id=UUID(conversation_id),
-                role='assistant',
-                query_id=UUID(query_id),
-                query_params={
-                    'connection_id': request.connection_id,
-                    'domain_id': request.domain_id
-                }
-            )
-            assistant_message_id = assistant_msg['message_id']
+
+            if should_reuse_existing_message:
+                assistant_message_id = existing_message_id
+                existing_message = await conv_service.get_message(assistant_message_id)
+                resumed_metadata = dict(existing_message.get("metadata") or {}) if existing_message else {}
+                resumed_metadata.update(
+                    {
+                        "hidden": False,
+                        "query_session_pending": False,
+                        "confirmation_mode": effective_confirmation_mode,
+                        "confirmation_mode_label": confirmation_mode_label,
+                    }
+                )
+                await conv_service.update_message(
+                    message_id=assistant_message_id,
+                    content="",
+                    sql_text="",
+                    result_summary="",
+                    result_data={},
+                    status="running",
+                    error_message="",
+                    metadata=resumed_metadata,
+                )
+                logger.info(
+                    "WebSocket 入口复用既有 assistant 消息",
+                    conversation_id=conversation_id,
+                    message_id=str(assistant_message_id),
+                    query_id=query_id,
+                )
+            else:
+                user_msg = await conv_service.add_message(
+                    conversation_id=conversation_uuid,
+                    role='user',
+                    content=request.text or '',
+                    status='completed',
+                    query_params={
+                        'connection_id': request.connection_id,
+                        'domain_id': request.domain_id,
+                        'explain_only': request.explain_only,
+                        'force_execute': request.force_execute,
+                        'confirmation_mode': effective_confirmation_mode,
+                    },
+                    metadata={
+                        'confirmation_mode': effective_confirmation_mode,
+                        'confirmation_mode_label': confirmation_mode_label,
+                    },
+                )
+                user_message_id = UUID(str(user_msg['message_id']))
+
+                assistant_msg = await conv_service.create_placeholder_message(
+                    conversation_id=conversation_uuid,
+                    role='assistant',
+                    query_id=UUID(query_id),
+                    query_params={
+                        'connection_id': request.connection_id,
+                        'domain_id': request.domain_id
+                    },
+                    metadata={
+                        'hidden': False,
+                        'query_session_pending': False,
+                        'confirmation_mode': effective_confirmation_mode,
+                        'confirmation_mode_label': confirmation_mode_label,
+                    },
+                )
+                assistant_message_id = UUID(str(assistant_msg['message_id']))
+
             actual_message_id = str(assistant_message_id)
             
             # 设置 contextvar，供 query() 函数内部使用
@@ -4520,6 +5148,7 @@ async def query_stream_socket(websocket: WebSocket):
         if not db_conn:
             pool = await get_metadata_pool()
             db_conn = await pool.acquire()
+        await _bootstrap_query_session()
         registry = ActiveQueryRegistry(db_conn)
         
         if current_user:
@@ -4663,6 +5292,7 @@ async def query_stream_socket(websocket: WebSocket):
     if conversation_id and db_conn and current_user and assistant_message_id:
         try:
             conv_service = ConversationService(db_conn)
+            session_service = QuerySessionService(db_conn)
             
             # 检查是否被停止（使用 Redis 停止信号）
             is_stopped = False
@@ -4672,6 +5302,15 @@ async def query_stream_socket(websocket: WebSocket):
             result = response_payload.get('result') if response_payload else None
             # 优先使用停止信号，其次使用 query_cancelled
             msg_status = 'cancelled' if (is_stopped or query_cancelled) else ('error' if query_error else 'completed')
+            query_session = await session_service.get_session(UUID(query_id)) if is_valid_uuid(query_id) else None
+            query_session_state = dict((query_session or {}).get('state_json') or {})
+            final_confirmation_mode = query_session_state.get('confirmation_mode') or effective_confirmation_mode
+            final_confirmation_mode_label = _get_confirmation_mode_label(final_confirmation_mode)
+            is_pending_user_action = bool(
+                query_session
+                and query_session.get('status') == 'awaiting_user_action'
+                and query_session.get('current_node') in PENDING_QUERY_SESSION_NODES
+            )
             
             # 构建 result_data（包含 meta 信息）
             save_result_data = None
@@ -4684,16 +5323,39 @@ async def query_stream_socket(websocket: WebSocket):
                         'meta': result.get('meta', {}),
                         'visualization_hint': result.get('visualization_hint')
                     }
+
+            existing_message = await conv_service.get_message(assistant_message_id)
+            existing_metadata = dict(existing_message.get('metadata') or {}) if existing_message else {}
+            merged_thinking_steps = _merge_thinking_steps(
+                existing_metadata.get('thinking_steps'),
+                emitter.get_thinking_steps(),
+            )
+            assistant_metadata = dict(existing_metadata)
+            assistant_metadata.update({
+                'hidden': is_pending_user_action and not result and not query_error,
+                'query_session_pending': is_pending_user_action,
+                'confirmation_mode': final_confirmation_mode,
+                'confirmation_mode_label': final_confirmation_mode_label,
+            })
+            if merged_thinking_steps:
+                assistant_metadata['thinking_steps'] = merged_thinking_steps
+            else:
+                assistant_metadata.pop('thinking_steps', None)
+
+            assistant_content = (result.get('summary') or result.get('explanation')) if result else ''
+            if msg_status == 'cancelled' and not assistant_content:
+                assistant_content = '查询已取消'
             
             # 更新占位消息
             await conv_service.update_message(
                 message_id=assistant_message_id,
-                content=result.get('summary', '') if result else '',
-                sql_text=result.get('meta', {}).get('sql') or result.get('sql') if result else None,
-                result_summary=result.get('summary') or result.get('explanation') if result else None,
-                result_data=save_result_data,
+                content=assistant_content,
+                sql_text=result.get('meta', {}).get('sql') or result.get('sql') if result else '',
+                result_summary=result.get('summary') or result.get('explanation') if result else '',
+                result_data=save_result_data if result else {},
                 status=msg_status,
-                error_message=str(query_error) if query_error else None
+                error_message=str(query_error) if query_error else '',
+                metadata=assistant_metadata,
             )
             
             # 清除停止信号（如果存在）

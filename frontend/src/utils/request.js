@@ -50,11 +50,17 @@ request.interceptors.response.use(
     return response
   },
   error => {
-    console.error('响应错误:', error)
-    
     // 处理不同的错误状态码
     if (error.response) {
       const { status, data } = error.response
+      const silentStatuses = Array.isArray(error.config?.silentStatuses) ? error.config.silentStatuses : []
+      const suppressErrorMessage = Boolean(error.config?.suppressErrorMessage) || silentStatuses.includes(status)
+
+      if (suppressErrorMessage) {
+        return Promise.reject(error)
+      }
+
+      console.error('响应错误:', error)
       
       switch (status) {
         case 401: {
@@ -134,9 +140,11 @@ request.interceptors.response.use(
           ElMessage.error(data?.detail || error.message || '请求失败')
       }
     } else if (error.request) {
+      console.error('响应错误:', error)
       // 请求已发出但没有收到响应
       ElMessage.error('网络连接失败，请检查网络')
     } else {
+      console.error('响应错误:', error)
       // 其他错误
       ElMessage.error(error.message || '请求失败')
     }
