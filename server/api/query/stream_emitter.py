@@ -22,6 +22,7 @@ class QueryStreamEmitter:
         self.query_id: Optional[str] = None
         self.message_id: Optional[str] = None
         self.thinking_steps: list[Dict[str, Any]] = []
+        self.narrative_chunks: list[str] = []
         self.closed = False
 
     def bind_query(self, query_id: str):
@@ -53,6 +54,9 @@ class QueryStreamEmitter:
 
     def get_thinking_steps(self) -> list[Dict[str, Any]]:
         return sanitize_for_json(self.thinking_steps)
+
+    def get_narrative_text(self) -> str:
+        return "".join(self.narrative_chunks).strip()
 
     async def _send(self, message: Dict[str, Any]) -> bool:
         """发送消息到 WebSocket，返回是否成功"""
@@ -118,6 +122,9 @@ class QueryStreamEmitter:
             if StopSignalService.check_stop_signal(self.message_id):
                 logger.info("发送叙述前检测到停止信号，中断发送", message_id=self.message_id)
                 raise QueryStoppedException(self.message_id, "用户取消")
+
+        if chunk:
+            self.narrative_chunks.append(chunk)
 
         await self.emit("narrative", {
             "chunk": chunk,

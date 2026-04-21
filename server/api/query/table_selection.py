@@ -286,6 +286,25 @@ async def llm_select_table(
                 else:
                     confirmation_reason = "请确认数据表选择"
 
+            confirmation_thinking_lines = []
+            if all_candidates:
+                top_candidate = all_candidates[0]
+                confirmation_thinking_lines.extend([
+                    f"候选表数: {len(all_candidates)}",
+                    f"最高候选: **{top_candidate.table_name}**",
+                    f"最高置信度: {top_candidate.confidence:.1%}",
+                    "→ 已完成候选表识别，等待用户确认后继续"
+                ])
+            else:
+                confirmation_thinking_lines.append("→ 已完成候选表识别，等待用户确认后继续")
+            await stream_thinking(
+                stream,
+                "table_selection",
+                "\n".join(confirmation_thinking_lines),
+                done=True,
+                step_status="success",
+            )
+
             # 构建确认卡
             card = TableSelectionCard(
                 candidates=all_candidates,  # 返回所有候选表，前端分批展示

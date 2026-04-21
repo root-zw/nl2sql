@@ -231,7 +231,7 @@
                       ></div>
                     </div>
                     <!-- 叙述生成中的占位 -->
-                    <div v-else-if="msg.status === 'running' && isNarrativeStreaming(msg)" class="summary-section loading">
+                    <div v-else-if="isNarrativeStreaming(msg)" class="summary-section loading">
                       <span class="loading-text">正在生成分析...</span>
                     </div>
 
@@ -2535,9 +2535,13 @@ function isNarrativeStreaming(msg) {
 function canShowResultDetails(msg) {
   // 如果消息已完成，显示所有内容
   if (msg.status === 'completed') return true
-  // 如果正在运行但叙述已完成（有内容且不在流式输出），也显示
-  if (msg.status === 'running' && msg.result_summary && !isNarrativeStreaming(msg)) return true
-  return false
+  return Boolean(
+    msg?.result_summary ||
+    msg?.sql_text ||
+    msg?.result_data?.columns?.length ||
+    msg?.result_data?.rows?.length ||
+    msg?.result_data?.meta?.explain_only
+  )
 }
 
 async function reopenTableSelectionForMessage(msg) {

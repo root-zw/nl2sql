@@ -251,3 +251,14 @@ def test_chat_view_restores_thinking_steps_and_reuses_existing_assistant_message
     assert "hidden: Boolean(nextMessage.metadata?.hidden) || isLegacyBlankAssistantMessage(nextMessage)" in content
     assert "function reuseOrCreateAssistantMessage(queryId)" in content
     assert "const assistantMessageId = reuseOrCreateAssistantMessage(queryId)" in content
+
+
+def test_chat_view_shows_result_details_before_narrative_finishes():
+    chat_view = ROOT_DIR / "frontend" / "src" / "views" / "Chat.vue"
+    content = chat_view.read_text(encoding="utf-8")
+
+    assert "v-else-if=\"isNarrativeStreaming(msg)\"" in content
+    assert "msg?.sql_text ||" in content
+    assert "msg?.result_data?.columns?.length ||" in content
+    assert "msg?.result_data?.rows?.length ||" in content
+    assert "msg?.result_data?.meta?.explain_only" in content

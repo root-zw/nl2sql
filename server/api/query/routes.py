@@ -5300,6 +5300,7 @@ async def query_stream_socket(websocket: WebSocket):
                 is_stopped = StopSignalService.check_stop_signal(actual_message_id)
             
             result = response_payload.get('result') if response_payload else None
+            emitted_narrative_text = emitter.get_narrative_text()
             # 优先使用停止信号，其次使用 query_cancelled
             msg_status = 'cancelled' if (is_stopped or query_cancelled) else ('error' if query_error else 'completed')
             query_session = await session_service.get_session(UUID(query_id)) if is_valid_uuid(query_id) else None
@@ -5342,7 +5343,7 @@ async def query_stream_socket(websocket: WebSocket):
             else:
                 assistant_metadata.pop('thinking_steps', None)
 
-            assistant_content = (result.get('summary') or result.get('explanation')) if result else ''
+            assistant_content = (result.get('summary') or result.get('explanation') or emitted_narrative_text) if result else emitted_narrative_text
             if msg_status == 'cancelled' and not assistant_content:
                 assistant_content = '查询已取消'
             
@@ -5351,7 +5352,7 @@ async def query_stream_socket(websocket: WebSocket):
                 message_id=assistant_message_id,
                 content=assistant_content,
                 sql_text=result.get('meta', {}).get('sql') or result.get('sql') if result else '',
-                result_summary=result.get('summary') or result.get('explanation') if result else '',
+                result_summary=(result.get('summary') or result.get('explanation') or emitted_narrative_text) if result else emitted_narrative_text,
                 result_data=save_result_data if result else {},
                 status=msg_status,
                 error_message=str(query_error) if query_error else '',
