@@ -172,6 +172,8 @@ def test_pending_session_view_models_composable_holds_pending_card_contract():
     assert "async function fetchPendingQuerySessionSnapshotWithRetry(" in content
     assert "querySessionAPI.get(queryId, { silentStatuses: [404] })" in content
     assert "async function loadQuerySessionSnapshot(" in content
+    assert "{ preserveSelection = false, preserveExistingOnError = false } = {}" in content
+    assert "const shouldPreserveExistingState = preserveExistingOnError &&" in content
     assert "function buildPendingExplanation(snapshot = pendingSessionSnapshot.value)" in content
     assert "function getSnapshotSelectedTableNames(snapshot = pendingSessionSnapshot.value)" in content
     assert "allow_multi_select: true" in content
@@ -255,6 +257,10 @@ def test_chat_view_restores_thinking_steps_and_reuses_existing_assistant_message
     assert "const assistantMessageId = resumeAsNewTurn" in content
     assert "? createAssistantPlaceholder()" in content
     assert ": reuseOrCreateAssistantMessage(queryId)" in content
+    assert "delete nextMetadata.thinking_steps" in content
+    assert "existingMsg.thinking_steps = null" in content
+    assert "delete thinkingSteps[snapshotMessageId]" in content
+    assert "delete expandedSql[snapshotMessageId]" in content
 
 
 def test_chat_view_shows_result_details_before_narrative_finishes():
@@ -266,3 +272,25 @@ def test_chat_view_shows_result_details_before_narrative_finishes():
     assert "msg?.result_data?.columns?.length ||" in content
     assert "msg?.result_data?.rows?.length ||" in content
     assert "msg?.result_data?.meta?.explain_only" in content
+
+
+def test_chat_view_uses_stream_payload_to_prime_pending_session_cards():
+    chat_view = ROOT_DIR / "frontend" / "src" / "views" / "Chat.vue"
+    content = chat_view.read_text(encoding="utf-8")
+
+    assert "const STREAM_PENDING_ACTION_CONTRACTS = {" in content
+    assert "function resolvePendingQueryText(preferredText = '')" in content
+    assert "function applyPendingStreamSnapshot({" in content
+    assert "function refreshPendingSessionSnapshot(" in content
+    assert "const localConfirmSnapshot = applyPendingStreamSnapshot({" in content
+    assert "const localTableSelectionSnapshot = applyPendingStreamSnapshot({" in content
+    assert "pendingQueryText.value = resolvePendingQueryText(payload.query_text)" in content
+    assert "preserveExistingOnError: true" in content
+
+
+def test_chat_view_skips_completed_cleanup_while_waiting_for_user_action():
+    chat_view = ROOT_DIR / "frontend" / "src" / "views" / "Chat.vue"
+    content = chat_view.read_text(encoding="utf-8")
+
+    assert "function isPendingCompletedPayload(payload)" in content
+    assert "if (isPendingCompletedPayload(payload) || hasActivePendingSession.value) {" in content

@@ -6,6 +6,7 @@ from server.api.query.routes import (
     _build_query_outcome_event_key,
     _emit_query_outcome_event,
     _map_query_outcome_event_type,
+    _should_emit_completed_event,
 )
 
 
@@ -21,6 +22,15 @@ def test_build_query_outcome_event_key_uses_message_id_and_status():
 
     assert _build_query_outcome_event_key("q1", message_id, "completed") == f"query_outcome:q1:{message_id}:completed"
     assert _build_query_outcome_event_key("q1", None, "failed") == "query_outcome:q1:none:failed"
+
+
+def test_should_emit_completed_event_skips_pending_user_action_payloads():
+    assert _should_emit_completed_event({"status": "success"}, query_cancelled=False) is True
+    assert _should_emit_completed_event({"status": "confirm_needed"}, query_cancelled=False) is False
+    assert _should_emit_completed_event({"status": "table_selection_needed"}, query_cancelled=False) is False
+    assert _should_emit_completed_event({"status": "awaiting_user_action"}, query_cancelled=False) is False
+    assert _should_emit_completed_event(None, query_cancelled=False) is True
+    assert _should_emit_completed_event({"status": "success"}, query_cancelled=True) is False
 
 
 @pytest.mark.asyncio

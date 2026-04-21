@@ -71,6 +71,7 @@ _query_id_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("q
 RESULT_SESSION_PENDING_ACTIONS = ["change_table", "revise", "request_explanation"]
 RUNNING_QUERY_PENDING_ACTIONS = ["change_table", "request_explanation", "exit_current"]
 PENDING_QUERY_SESSION_NODES = {"table_resolution", "execution_guard", "draft_confirmation"}
+PENDING_STREAM_RESPONSE_STATUSES = {"table_selection_needed", "confirm_needed", "awaiting_user_action"}
 CONFIRMATION_MODE_LABELS = {
     "adaptive": "智能确认",
     "always_confirm": "始终确认",
@@ -236,6 +237,18 @@ def _map_query_outcome_event_type(status: str) -> Optional[str]:
 
 def _build_query_outcome_event_key(query_id: str, message_id: Optional[UUID], status: str) -> str:
     return f"query_outcome:{query_id}:{message_id or 'none'}:{status}"
+
+
+def _should_emit_completed_event(
+    response_payload: Optional[Dict[str, Any]],
+    *,
+    query_cancelled: bool,
+) -> bool:
+    if query_cancelled:
+        return False
+    if not response_payload:
+        return True
+    return str(response_payload.get("status") or "").strip() not in PENDING_STREAM_RESPONSE_STATUSES
 
 
 async def _emit_query_outcome_event(
@@ -5404,8 +5417,6 @@ async def query_stream_socket(websocket: WebSocket):
         except Exception:
             pass
 
-    if response_payload and not query_cancelled:
-        await emitter.emit_completed(response_payload)
-    elif not query_cancelled:
-        await emitter.emit_completed({"status": "error"})
+    if _should_emit_completed_event(response_payload, query_cancelled=query_cancelled):
+        await emitter.emit_completed(response_payload or {"status": "error"})
     await emitter.close()

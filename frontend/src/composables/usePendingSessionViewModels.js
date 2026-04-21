@@ -225,7 +225,7 @@ export function usePendingSessionViewModels({
 
   async function loadQuerySessionSnapshot(
     queryId,
-    { preserveSelection = false } = {}
+    { preserveSelection = false, preserveExistingOnError = false } = {}
   ) {
     if (!queryId) return null
 
@@ -239,7 +239,12 @@ export function usePendingSessionViewModels({
       return snapshot
     } catch (e) {
       console.warn('加载查询会话失败', e)
-      clearPendingSessionState({ keepQueryText: true })
+      const shouldPreserveExistingState = preserveExistingOnError &&
+        pendingSessionSnapshot.value?.query_id === queryId
+
+      if (!shouldPreserveExistingState) {
+        clearPendingSessionState({ keepQueryText: true })
+      }
       originalQueryId.value = queryId
       return null
     }

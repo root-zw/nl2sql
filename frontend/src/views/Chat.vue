@@ -1107,6 +1107,28 @@ function resetPendingTableUi() {
   tableBatchIndex.value = 0
 }
 
+const STREAM_PENDING_ACTION_CONTRACTS = {
+  table_resolution: {
+    rawPendingActions: ['confirm', 'change_table', 'request_explanation', 'exit_current'],
+    actionBindings: {
+      choose_table: 'confirm',
+      change_table: 'change_table',
+      request_explanation: 'request_explanation',
+      cancel_query: 'exit_current'
+    }
+  },
+  draft_confirmation: {
+    rawPendingActions: ['confirm', 'revise', 'change_table', 'request_explanation', 'exit_current'],
+    actionBindings: {
+      confirm_draft: 'confirm',
+      revise: 'revise',
+      change_table: 'change_table',
+      request_explanation: 'request_explanation',
+      cancel_query: 'exit_current'
+    }
+  }
+}
+
 function clearPendingSessionState({ keepQueryText = false } = {}) {
   pendingSessionSnapshot.value = null
   pendingConfirm.value = null
@@ -1119,6 +1141,167 @@ function clearPendingSessionState({ keepQueryText = false } = {}) {
     pendingQueryText.value = ''
     originalQueryId.value = null
   }
+}
+
+function getLatestUserMessageText() {
+  for (let index = messages.value.length - 1; index >= 0; index -= 1) {
+    const msg = messages.value[index]
+    if (msg?.role === 'user' && msg?.content) {
+      return msg.content
+    }
+  }
+  return ''
+}
+
+function resolvePendingQueryText(preferredText = '') {
+  return preferredText ||
+    pendingQueryText.value ||
+    pendingSessionSnapshot.value?.confirmation_view?.context?.question_text ||
+    pendingSessionSnapshot.value?.state?.question_text ||
+    getLatestUserMessageText() ||
+    ''
+}
+
+function isPendingCompletedPayload(payload) {
+  return ['table_selection_needed', 'confirm_needed', 'awaiting_user_action'].includes(payload?.status)
+}
+
+function applyPendingStreamSnapshot({
+  currentNode,
+  queryId,
+  messageId,
+  queryText,
+  confirmation = null,
+  tableSelection = null,
+  preserveSelection = false
+}) {
+  const actionContract = STREAM_PENDING_ACTION_CONTRACTS[currentNode]
+  if (!queryId || !actionContract) return null
+
+  const existingSnapshot = normalizeSessionSnapshot(pendingSessionSnapshot.value)
+  const existingConfirmationView = existingSnapshot?.confirmation_view || {}
+  const existingState = existingSnapshot?.state || {}
+  const fallbackSelectedTableIds = (
+    existingConfirmationView.dependency_meta?.selected_table_ids ||
+    existingConfirmationView.table_resolution?.selected_table_ids ||
+    existingState.selected_table_ids ||
+    []
+  ).filter(Boolean)
+  const resolvedQueryText = resolvePendingQueryText(queryText)
+  const confirmationView = {
+    ...existingConfirmationView,
+    context: {
+      ...(existingConfirmationView.context || {}),
+      question_text: resolvedQueryText
+    },
+    pending_actions: Object.keys(actionContract.actionBindings),
+    dependency_meta: {
+      ...(existingConfirmationView.dependency_meta || {}),
+      action_bindings: {
+        ...(((existingConfirmationView.dependency_meta || {}).action_bindings) || {}),
+        ...actionContract.actionBindings
+      },
+      raw_pending_actions: actionContract.rawPendingActions,
+      selected_table_ids: fallbackSelectedTableIds
+    }
+  }
+  const nextState = {
+    ...existingState,
+    question_text: resolvedQueryText,
+    pending_actions: actionContract.rawPendingActions,
+    selected_table_ids: fallbackSelectedTableIds
+  }
+
+  if (currentNode === 'table_resolution' && tableSelection) {
+    const selectedFromCard = (tableSelection.selected_table_ids || []).filter(Boolean)
+    const resolvedSelectedTableIds = selectedFromCard.length > 0 ? selectedFromCard : fallbackSelectedTableIds
+    const normalizedTableResolution = {
+      ...tableSelection,
+      reason_summary: tableSelection.reason_summary || tableSelection.confirmation_reason || '',
+      selected_table_ids: resolvedSelectedTableIds,
+      rejected_table_ids: tableSelection.rejected_table_ids || existingState.rejected_table_ids || [],
+      manual_table_override: tableSelection.manual_table_override ?? existingState.manual_table_override ?? false
+    }
+
+    confirmationView.table_resolution = normalizedTableResolution
+    confirmationView.dependency_meta.selected_table_ids = resolvedSelectedTableIds
+    nextState.table_resolution_state = normalizedTableResolution
+    nextState.selected_table_ids = resolvedSelectedTableIds
+    nextState.multi_table_mode = tableSelection.multi_table_mode || existingState.multi_table_mode || null
+    nextState.recommended_table_ids = tableSelection.recommended_table_ids || existingState.recommended_table_ids || []
+    nextState.manual_table_override = normalizedTableResolution.manual_table_override
+  }
+
+  if (currentNode === 'draft_confirmation' && confirmation) {
+    const draftCard = {
+      natural_language: confirmation.natural_language || '',
+      warnings: confirmation.warnings || [],
+      suggestions: confirmation.suggestions || [],
+      confidence: confirmation.confidence ?? null,
+      ambiguities: confirmation.ambiguities || [],
+      open_points: confirmation.open_points || [],
+      selected_table_names: confirmation.selected_table_names || [],
+      estimated_cost: confirmation.estimated_cost || null,
+      draft_json: confirmation.ir || null,
+      ir: confirmation.ir || null
+    }
+
+    confirmationView.draft = draftCard
+    nextState.provisional_draft = {
+      status: 'awaiting_confirmation',
+      natural_language: draftCard.natural_language,
+      draft_json: draftCard.draft_json,
+      warnings: draftCard.warnings,
+      suggestions: draftCard.suggestions,
+      confidence: draftCard.confidence,
+      ambiguities: draftCard.ambiguities,
+      open_points: draftCard.open_points,
+      selected_table_names: draftCard.selected_table_names,
+      confirmed: false,
+      confirmation_required: true,
+      table_dependent: true,
+      invalidate_on_table_change: true
+    }
+    nextState.ir_snapshot = confirmation.ir || existingState.ir_snapshot || null
+  }
+
+  return applyPendingSessionSnapshot({
+    query_id: queryId,
+    message_id: messageId || existingSnapshot?.message_id || null,
+    status: 'awaiting_user_action',
+    current_node: currentNode,
+    confirmation_view: confirmationView,
+    state: nextState,
+    session: {
+      ...(existingSnapshot?.session || {}),
+      query_id: queryId,
+      message_id: messageId || existingSnapshot?.message_id || null,
+      status: 'awaiting_user_action',
+      current_node: currentNode
+    }
+  }, { preserveSelection })
+}
+
+function refreshPendingSessionSnapshot(
+  queryId,
+  errorMessage,
+  { preserveSelection = false, localSnapshotApplied = false } = {}
+) {
+  if (!queryId) {
+    if (!localSnapshotApplied && errorMessage) {
+      appendAssistantInfoMessage(errorMessage)
+    }
+    return
+  }
+
+  void loadQuerySessionSnapshot(queryId, {
+    preserveSelection,
+    preserveExistingOnError: true
+  }).then(snapshot => {
+    if (!snapshot && !localSnapshotApplied && errorMessage) {
+      appendAssistantInfoMessage(errorMessage)
+    }
+  })
 }
 
 function hideAssistantPlaceholder(messageId) {
@@ -1151,6 +1334,13 @@ function reuseOrCreateAssistantMessage(queryId) {
   if (snapshotMessageId) {
     const existingMsg = findMessage(snapshotMessageId)
     if (existingMsg) {
+      const nextMetadata = {
+        ...(existingMsg.metadata || {}),
+        hidden: false,
+        query_session_pending: false
+      }
+      delete nextMetadata.thinking_steps
+
       existingMsg.hidden = false
       existingMsg.status = 'pending'
       existingMsg.content = ''
@@ -1159,6 +1349,11 @@ function reuseOrCreateAssistantMessage(queryId) {
       existingMsg.result_data = null
       existingMsg.error_message = null
       existingMsg.is_stopping = false
+      existingMsg.thinking_steps = null
+      existingMsg.metadata = nextMetadata
+      delete thinkingSteps[snapshotMessageId]
+      delete thinkingExpanded[snapshotMessageId]
+      delete expandedSql[snapshotMessageId]
       return snapshotMessageId
     }
     return createAssistantPlaceholder(snapshotMessageId)
@@ -1642,11 +1837,24 @@ async function handleWebSocketMessage(data, assistantMessageId) {
     case 'confirm':
       // 需要确认
       hideAssistantPlaceholder(assistantMessageId)
-      pendingQueryText.value = queryText.value || payload.query_text || ''
-      originalQueryId.value = data.query_id || currentQueryId.value || null
-      if (!(await loadQuerySessionSnapshot(originalQueryId.value))) {
-        appendAssistantInfoMessage('确认阶段状态加载失败，请重试。')
-      }
+      originalQueryId.value = data.query_id || payload.query_id || currentQueryId.value || originalQueryId.value || null
+      pendingQueryText.value = resolvePendingQueryText(payload.query_text)
+      const localConfirmSnapshot = applyPendingStreamSnapshot({
+        currentNode: 'draft_confirmation',
+        queryId: originalQueryId.value,
+        messageId: assistantMessageId,
+        queryText: pendingQueryText.value,
+        confirmation: payload.confirmation,
+        preserveSelection: true
+      })
+      refreshPendingSessionSnapshot(
+        originalQueryId.value,
+        '确认阶段状态加载失败，请重试。',
+        {
+          preserveSelection: true,
+          localSnapshotApplied: Boolean(localConfirmSnapshot)
+        }
+      )
       loading.value = false
       progressSteps.value = []
       break
@@ -1654,12 +1862,25 @@ async function handleWebSocketMessage(data, assistantMessageId) {
     case 'table_selection':
       // 表选择
       hideAssistantPlaceholder(assistantMessageId)
-      originalQueryId.value = data.query_id || null
+      originalQueryId.value = data.query_id || payload.query_id || currentQueryId.value || originalQueryId.value || null
       // 保存原始查询文本，确认时需要用
-      pendingQueryText.value = payload.query_text || queryText.value || ''
-      if (!(await loadQuerySessionSnapshot(originalQueryId.value))) {
-        appendAssistantInfoMessage('选表阶段状态加载失败，请重试。')
-      }
+      pendingQueryText.value = resolvePendingQueryText(payload.query_text)
+      const localTableSelectionSnapshot = applyPendingStreamSnapshot({
+        currentNode: 'table_resolution',
+        queryId: originalQueryId.value,
+        messageId: assistantMessageId,
+        queryText: pendingQueryText.value,
+        tableSelection: payload.table_selection,
+        preserveSelection: false
+      })
+      refreshPendingSessionSnapshot(
+        originalQueryId.value,
+        '选表阶段状态加载失败，请重试。',
+        {
+          preserveSelection: false,
+          localSnapshotApplied: Boolean(localTableSelectionSnapshot)
+        }
+      )
       loading.value = false
       progressSteps.value = []
       break
@@ -1744,10 +1965,13 @@ async function handleWebSocketMessage(data, assistantMessageId) {
       break
       
     case 'completed':
-      // 查询完成，重置所有状态
-      clearPendingSessionState()
       loading.value = false
       progressSteps.value = []
+      if (isPendingCompletedPayload(payload) || hasActivePendingSession.value) {
+        break
+      }
+      // 查询完成，重置所有状态
+      clearPendingSessionState()
       narrativeStreaming.value = false
       narrativePending.value = false
       
