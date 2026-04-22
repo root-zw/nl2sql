@@ -182,11 +182,11 @@
             "start_date": {"type": "string", "format": "date", "description": "起始日期（absolute类型必填）"},
             "end_date": {"type": "string", "format": "date", "description": "结束日期（absolute类型必填）"},
             "last_n": {"type": "integer", "description": "相对时间数量（relative类型必填），如近6年填6"},
-            "unit": {"type": "string", "enum": ["day", "week", "month", "quarter", "year"], "description": "时间单位。year时系统优先使用年份字段，否则使用日期字段"},
+            "unit": {"type": "string", "enum": ["day", "week", "month", "quarter", "year"], "description": "时间单位。若查询依赖年份字段，请优先显式生成年份 filters；time 主要用于日期时间字段"},
             "grain": {"type": "string"},
             "offset": {"type": "integer"}
           },
-          "description": "时间范围配置。unit=year时系统优先使用年份维度字段过滤，否则使用表的日期时间字段"
+          "description": "时间范围配置。若需要按年份字段过滤，请优先在 filters 中显式给出年份条件；time 主要用于表的日期时间字段"
         },
         "time_grain": {
           "type": "string",
@@ -206,7 +206,12 @@
         "show_growth_rate": {
           "type": "boolean",
           "default": true,
-          "description": "是否显示增长率"
+          "description": "是否显示增长率。仅当用户明确提到增长率、涨跌、同比/环比时设为 true"
+        },
+        "show_previous_period_value": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否显式展示上期值/去年同期值。默认 false，仅在用户明确要求查看上期值时设为 true"
         },
         "cumulative_metrics": {
           "type": "array",

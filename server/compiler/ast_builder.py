@@ -1461,7 +1461,7 @@ class ASTBuilder:
 
         # 12. 处理同比/环比计算（需要子查询包装）
         # 派生指标和原子指标都包含聚合函数，不能直接放在 LAG() 窗口函数内部，需要先聚合再计算
-        if ir.comparison_type and ir.show_growth_rate:
+        if ir.comparison_type and (ir.show_growth_rate or getattr(ir, "show_previous_period_value", False)):
             # 检查是否有需要同比计算的指标（派生指标或原子指标）
             def get_metric_id(m):
                 if isinstance(m, str):
@@ -6360,6 +6360,7 @@ class ASTBuilder:
         结果格式：行政区, 用途分类, 2023年楼面地价, 2024年楼面地价, 增长率
         """
         logger.debug("构建 Pivot 模式同比查询")
+        show_growth_rate = bool(getattr(ir, "show_growth_rate", False))
         
         target_year = year_values[-1]  # 最大年份（如 2024）
         prev_year = year_values[0]     # 最小年份（如 2023）
@@ -6422,38 +6423,39 @@ class ASTBuilder:
             logger.debug(f"Pivot: 添加当期值列: {target_year_alias}")
             
             # 2.3 增长率列
-            lag_func_for_growth = exp.Lag(
-                this=exp.column(metric_alias, table="t"),
-                offset=exp.Literal.number(lag_offset)
-            )
-            window_spec_for_growth = exp.Window(
-                this=lag_func_for_growth,
-                order=exp.Order(expressions=[exp.Ordered(this=order_expr, desc=False)]),
-                **({"partition_by": partition_by_exprs} if partition_by_exprs else {})
-            )
-            
-            growth_rate_expr = exp.Case(
-                ifs=[
-                    exp.If(
-                        this=exp.Or(
-                            this=exp.Is(this=window_spec_for_growth.copy(), expression=exp.Null()),
-                            expression=exp.EQ(this=window_spec_for_growth.copy(), expression=exp.Literal.number(0))
-                        ),
-                        true=exp.Null()
-                    )
-                ],
-                default=exp.Mul(
-                    this=exp.Div(
-                        this=exp.Sub(this=current_value.copy(), expression=window_spec_for_growth.copy()),
-                        expression=window_spec_for_growth.copy()
-                    ),
-                    expression=exp.Literal.number(100)
+            if show_growth_rate:
+                lag_func_for_growth = exp.Lag(
+                    this=exp.column(metric_alias, table="t"),
+                    offset=exp.Literal.number(lag_offset)
                 )
-            )
-            
-            growth_alias = f"{metric_alias}_增长率"
-            outer_select_exprs.append(growth_rate_expr.as_(growth_alias))
-            logger.debug(f"Pivot: 添加增长率列: {growth_alias}")
+                window_spec_for_growth = exp.Window(
+                    this=lag_func_for_growth,
+                    order=exp.Order(expressions=[exp.Ordered(this=order_expr, desc=False)]),
+                    **({"partition_by": partition_by_exprs} if partition_by_exprs else {})
+                )
+                
+                growth_rate_expr = exp.Case(
+                    ifs=[
+                        exp.If(
+                            this=exp.Or(
+                                this=exp.Is(this=window_spec_for_growth.copy(), expression=exp.Null()),
+                                expression=exp.EQ(this=window_spec_for_growth.copy(), expression=exp.Literal.number(0))
+                            ),
+                            true=exp.Null()
+                        )
+                    ],
+                    default=exp.Mul(
+                        this=exp.Div(
+                            this=exp.Sub(this=current_value.copy(), expression=window_spec_for_growth.copy()),
+                            expression=window_spec_for_growth.copy()
+                        ),
+                        expression=exp.Literal.number(100)
+                    )
+                )
+                
+                growth_alias = f"{metric_alias}_增长率"
+                outer_select_exprs.append(growth_rate_expr.as_(growth_alias))
+                logger.debug(f"Pivot: 添加增长率列: {growth_alias}")
         
         # 3. 添加 conditional_metrics（条件聚合指标）列 - 这些列在内层查询已计算，外层需要透传并添加同比
         # 注意：conditional_metrics 应该在 ratio_metrics 之前，因为占比是基于条件聚合结果计算的
@@ -6519,6 +6521,38 @@ class ASTBuilder:
                     target_ratio_alias = f"{target_year}年{ratio_alias}"
                     outer_select_exprs.append(current_ratio.as_(target_ratio_alias))
                     logger.debug(f"Pivot: 添加当期占比列: {target_ratio_alias}")
+
+                    if show_growth_rate:
+                        lag_func_for_growth = exp.Lag(
+                            this=exp.column(ratio_alias, table="t"),
+                            offset=exp.Literal.number(lag_offset)
+                        )
+                        window_spec_for_growth = exp.Window(
+                            this=lag_func_for_growth,
+                            order=exp.Order(expressions=[exp.Ordered(this=order_expr, desc=False)]),
+                            **({"partition_by": partition_by_exprs} if partition_by_exprs else {})
+                        )
+                        growth_rate_expr = exp.Case(
+                            ifs=[
+                                exp.If(
+                                    this=exp.Or(
+                                        this=exp.Is(this=window_spec_for_growth.copy(), expression=exp.Null()),
+                                        expression=exp.EQ(this=window_spec_for_growth.copy(), expression=exp.Literal.number(0))
+                                    ),
+                                    true=exp.Null()
+                                )
+                            ],
+                            default=exp.Mul(
+                                this=exp.Div(
+                                    this=exp.Sub(this=current_ratio.copy(), expression=window_spec_for_growth.copy()),
+                                    expression=window_spec_for_growth.copy()
+                                ),
+                                expression=exp.Literal.number(100)
+                            )
+                        )
+                        growth_alias = f"{ratio_alias}_增长率"
+                        outer_select_exprs.append(growth_rate_expr.as_(growth_alias))
+                        logger.debug(f"Pivot: 添加占比增长率列: {growth_alias}")
         
         # 移除内层查询的 ORDER BY 子句（SQL Server 兼容性）
         inner_query = query.copy()
@@ -6566,8 +6600,9 @@ class ASTBuilder:
                 target_year_alias = f"{target_year}年{metric_alias}"
                 final_select_exprs.append(exp.column(target_year_alias, table="t2"))
                 # 增长率列
-                growth_alias = f"{metric_alias}_增长率"
-                final_select_exprs.append(exp.column(growth_alias, table="t2"))
+                if show_growth_rate:
+                    growth_alias = f"{metric_alias}_增长率"
+                    final_select_exprs.append(exp.column(growth_alias, table="t2"))
         
         # 添加 conditional_metrics 列到最外层查询（在 ratio_metrics 之前）
         if hasattr(ir, 'conditional_metrics') and ir.conditional_metrics:
@@ -6593,6 +6628,9 @@ class ASTBuilder:
                     # 当期占比列
                     target_ratio_alias = f"{target_year}年{ratio_alias}"
                     final_select_exprs.append(exp.column(target_ratio_alias, table="t2"))
+                    if show_growth_rate:
+                        growth_alias = f"{ratio_alias}_增长率"
+                        final_select_exprs.append(exp.column(growth_alias, table="t2"))
                     logger.debug(f"Pivot: 最外层添加占比列: {prev_ratio_alias}, {target_ratio_alias}")
         
         # 构建最外层查询
@@ -6633,10 +6671,12 @@ class ASTBuilder:
         """
         构建 Vertical 模式的同比查询（纵向显示，适用于多期同比）
         
-        结果格式：年份, 行政区, 用途分类, 楼面地价, 上年楼面地价, 同比增长率
+        结果格式：年份, 行政区, 用途分类, 楼面地价[, 上年楼面地价], 同比增长率
         所有年份都显示，最早年份的增长率为 NULL
         """
         logger.debug("构建 Vertical 模式同比查询")
+        show_growth_rate = bool(getattr(ir, "show_growth_rate", False))
+        show_previous_period_value = bool(getattr(ir, "show_previous_period_value", False))
         
         # 构建外层 SELECT 列表
         outer_select_exprs = []
@@ -6677,55 +6717,57 @@ class ASTBuilder:
             logger.debug(f"Vertical: 添加当期值列: {metric_alias}")
             
             # 3.2 上期值列（使用通用名称"上年"）
-            lag_func = exp.Lag(
-                this=exp.column(metric_alias, table="t"),
-                offset=exp.Literal.number(lag_offset)
-            )
-            window_kwargs = {
-                "this": lag_func,
-                "order": exp.Order(expressions=[exp.Ordered(this=order_expr, desc=False)])
-            }
-            if partition_by_exprs:
-                window_kwargs["partition_by"] = partition_by_exprs
-            window_spec = exp.Window(**window_kwargs)
-            
-            prev_alias = f"上年{metric_alias}"
-            outer_select_exprs.append(window_spec.as_(prev_alias))
-            logger.debug(f"Vertical: 添加上期值列: {prev_alias}")
+            if show_previous_period_value:
+                lag_func = exp.Lag(
+                    this=exp.column(metric_alias, table="t"),
+                    offset=exp.Literal.number(lag_offset)
+                )
+                window_kwargs = {
+                    "this": lag_func,
+                    "order": exp.Order(expressions=[exp.Ordered(this=order_expr, desc=False)])
+                }
+                if partition_by_exprs:
+                    window_kwargs["partition_by"] = partition_by_exprs
+                window_spec = exp.Window(**window_kwargs)
+                
+                prev_alias = f"上年{metric_alias}"
+                outer_select_exprs.append(window_spec.as_(prev_alias))
+                logger.debug(f"Vertical: 添加上期值列: {prev_alias}")
             
             # 3.3 增长率列
-            lag_func_for_growth = exp.Lag(
-                this=exp.column(metric_alias, table="t"),
-                offset=exp.Literal.number(lag_offset)
-            )
-            window_spec_for_growth = exp.Window(
-                this=lag_func_for_growth,
-                order=exp.Order(expressions=[exp.Ordered(this=order_expr, desc=False)]),
-                **({"partition_by": partition_by_exprs} if partition_by_exprs else {})
-            )
-            
-            growth_rate_expr = exp.Case(
-                ifs=[
-                    exp.If(
-                        this=exp.Or(
-                            this=exp.Is(this=window_spec_for_growth.copy(), expression=exp.Null()),
-                            expression=exp.EQ(this=window_spec_for_growth.copy(), expression=exp.Literal.number(0))
-                        ),
-                        true=exp.Null()
-                    )
-                ],
-                default=exp.Mul(
-                    this=exp.Div(
-                        this=exp.Sub(this=current_value.copy(), expression=window_spec_for_growth.copy()),
-                        expression=window_spec_for_growth.copy()
-                    ),
-                    expression=exp.Literal.number(100)
+            if show_growth_rate:
+                lag_func_for_growth = exp.Lag(
+                    this=exp.column(metric_alias, table="t"),
+                    offset=exp.Literal.number(lag_offset)
                 )
-            )
-            
-            growth_alias = f"{metric_alias}_同比增长率"
-            outer_select_exprs.append(growth_rate_expr.as_(growth_alias))
-            logger.debug(f"Vertical: 添加增长率列: {growth_alias}")
+                window_spec_for_growth = exp.Window(
+                    this=lag_func_for_growth,
+                    order=exp.Order(expressions=[exp.Ordered(this=order_expr, desc=False)]),
+                    **({"partition_by": partition_by_exprs} if partition_by_exprs else {})
+                )
+                
+                growth_rate_expr = exp.Case(
+                    ifs=[
+                        exp.If(
+                            this=exp.Or(
+                                this=exp.Is(this=window_spec_for_growth.copy(), expression=exp.Null()),
+                                expression=exp.EQ(this=window_spec_for_growth.copy(), expression=exp.Literal.number(0))
+                            ),
+                            true=exp.Null()
+                        )
+                    ],
+                    default=exp.Mul(
+                        this=exp.Div(
+                            this=exp.Sub(this=current_value.copy(), expression=window_spec_for_growth.copy()),
+                            expression=window_spec_for_growth.copy()
+                        ),
+                        expression=exp.Literal.number(100)
+                    )
+                )
+                
+                growth_alias = f"{metric_alias}_同比增长率"
+                outer_select_exprs.append(growth_rate_expr.as_(growth_alias))
+                logger.debug(f"Vertical: 添加增长率列: {growth_alias}")
         
         # 4. 添加 conditional_metrics（条件聚合指标）列 - 这些列在内层查询已计算，外层需要透传
         # 注意：conditional_metrics 应该在 ratio_metrics 之前，因为占比是基于条件聚合结果计算的
@@ -6737,25 +6779,25 @@ class ASTBuilder:
                     outer_select_exprs.append(exp.column(cond_alias, table="t").as_(cond_alias))
                     logger.debug(f"Vertical: 添加条件指标列: {cond_alias}")
                     
-                    # 可选：为条件指标也添加上年值
-                    partition_by_exprs = [exp.column(a, table="t") for a in partition_dim_aliases]
-                    order_expr = exp.column(time_dim_alias, table="t")
-                    
-                    lag_func = exp.Lag(
-                        this=exp.column(cond_alias, table="t"),
-                        offset=exp.Literal.number(lag_offset)
-                    )
-                    window_kwargs = {
-                        "this": lag_func,
-                        "order": exp.Order(expressions=[exp.Ordered(this=order_expr, desc=False)])
-                    }
-                    if partition_by_exprs:
-                        window_kwargs["partition_by"] = partition_by_exprs
-                    window_spec = exp.Window(**window_kwargs)
-                    
-                    prev_cond_alias = f"上年{cond_alias}"
-                    outer_select_exprs.append(window_spec.as_(prev_cond_alias))
-                    logger.debug(f"Vertical: 添加上年条件指标列: {prev_cond_alias}")
+                    if show_previous_period_value:
+                        partition_by_exprs = [exp.column(a, table="t") for a in partition_dim_aliases]
+                        order_expr = exp.column(time_dim_alias, table="t")
+                        
+                        lag_func = exp.Lag(
+                            this=exp.column(cond_alias, table="t"),
+                            offset=exp.Literal.number(lag_offset)
+                        )
+                        window_kwargs = {
+                            "this": lag_func,
+                            "order": exp.Order(expressions=[exp.Ordered(this=order_expr, desc=False)])
+                        }
+                        if partition_by_exprs:
+                            window_kwargs["partition_by"] = partition_by_exprs
+                        window_spec = exp.Window(**window_kwargs)
+                        
+                        prev_cond_alias = f"上年{cond_alias}"
+                        outer_select_exprs.append(window_spec.as_(prev_cond_alias))
+                        logger.debug(f"Vertical: 添加上年条件指标列: {prev_cond_alias}")
         
         # 5. 添加 ratio_metrics（占比指标）列 - 这些列在内层查询已计算，外层需要透传
         if hasattr(ir, 'ratio_metrics') and ir.ratio_metrics:
@@ -6766,27 +6808,60 @@ class ASTBuilder:
                     outer_select_exprs.append(exp.column(ratio_alias, table="t").as_(ratio_alias))
                     logger.debug(f"Vertical: 添加占比指标列: {ratio_alias}")
                     
-                    # 可选：为占比指标也添加同比（占比的变化）
-                    # 构建 PARTITION BY 和 ORDER BY 表达式
                     partition_by_exprs = [exp.column(a, table="t") for a in partition_dim_aliases]
                     order_expr = exp.column(time_dim_alias, table="t")
-                    
-                    # 上年占比
-                    lag_func = exp.Lag(
-                        this=exp.column(ratio_alias, table="t"),
-                        offset=exp.Literal.number(lag_offset)
-                    )
-                    window_kwargs = {
-                        "this": lag_func,
-                        "order": exp.Order(expressions=[exp.Ordered(this=order_expr, desc=False)])
-                    }
-                    if partition_by_exprs:
-                        window_kwargs["partition_by"] = partition_by_exprs
-                    window_spec = exp.Window(**window_kwargs)
-                    
-                    prev_ratio_alias = f"上年{ratio_alias}"
-                    outer_select_exprs.append(window_spec.as_(prev_ratio_alias))
-                    logger.debug(f"Vertical: 添加上年占比列: {prev_ratio_alias}")
+
+                    if show_previous_period_value:
+                        lag_func = exp.Lag(
+                            this=exp.column(ratio_alias, table="t"),
+                            offset=exp.Literal.number(lag_offset)
+                        )
+                        window_kwargs = {
+                            "this": lag_func,
+                            "order": exp.Order(expressions=[exp.Ordered(this=order_expr, desc=False)])
+                        }
+                        if partition_by_exprs:
+                            window_kwargs["partition_by"] = partition_by_exprs
+                        window_spec = exp.Window(**window_kwargs)
+                        
+                        prev_ratio_alias = f"上年{ratio_alias}"
+                        outer_select_exprs.append(window_spec.as_(prev_ratio_alias))
+                        logger.debug(f"Vertical: 添加上年占比列: {prev_ratio_alias}")
+
+                    if show_growth_rate:
+                        lag_func_for_growth = exp.Lag(
+                            this=exp.column(ratio_alias, table="t"),
+                            offset=exp.Literal.number(lag_offset)
+                        )
+                        window_spec_for_growth = exp.Window(
+                            this=lag_func_for_growth,
+                            order=exp.Order(expressions=[exp.Ordered(this=order_expr, desc=False)]),
+                            **({"partition_by": partition_by_exprs} if partition_by_exprs else {})
+                        )
+                        growth_rate_expr = exp.Case(
+                            ifs=[
+                                exp.If(
+                                    this=exp.Or(
+                                        this=exp.Is(this=window_spec_for_growth.copy(), expression=exp.Null()),
+                                        expression=exp.EQ(this=window_spec_for_growth.copy(), expression=exp.Literal.number(0))
+                                    ),
+                                    true=exp.Null()
+                                )
+                            ],
+                            default=exp.Mul(
+                                this=exp.Div(
+                                    this=exp.Sub(
+                                        this=exp.column(ratio_alias, table="t"),
+                                        expression=window_spec_for_growth.copy()
+                                    ),
+                                    expression=window_spec_for_growth.copy()
+                                ),
+                                expression=exp.Literal.number(100)
+                            )
+                        )
+                        growth_alias = f"{ratio_alias}_同比增长率"
+                        outer_select_exprs.append(growth_rate_expr.as_(growth_alias))
+                        logger.debug(f"Vertical: 添加占比增长率列: {growth_alias}")
         
         # 移除内层查询的 ORDER BY 子句（SQL Server 兼容性）
         inner_query = query.copy()

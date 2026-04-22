@@ -204,6 +204,7 @@ def _build_natural_fallback_items(
     moving_average_window = ir_display.get("moving_average_window")
     comparison_text = str(ir_display.get("comparison_type") or "").strip()
     show_growth_rate = bool(ir_display.get("show_growth_rate"))
+    show_previous_period_value = bool(ir_display.get("show_previous_period_value"))
     limit = ir_display.get("limit")
     time_text = describe_time_range(ir_display.get("time"))
     filter_texts = [
@@ -380,6 +381,8 @@ def _build_natural_fallback_items(
         base_analysis = f"结果会做{comparison_label}分析"
         if show_growth_rate:
             base_analysis += "并显示增长率"
+        if show_previous_period_value:
+            base_analysis += "，并展示上期值"
         analysis_parts.append(base_analysis)
     elif show_growth_rate:
         analysis_parts.append("结果会显示增长率")

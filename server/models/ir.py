@@ -219,6 +219,10 @@ class IntermediateRepresentation(BaseModel):
         default=True,
         description="是否显示增长率（同比/环比使用）"
     )
+    show_previous_period_value: bool = Field(
+        default=False,
+        description="是否显式展示上期值/去年同期值。默认仅展示当前值；仅在用户明确要求时设为 true"
+    )
     
     # 累计统计（SQL Server 2012+ SUM/AVG OVER）
     cumulative_metrics: List[str] = Field(
@@ -454,4 +458,3 @@ class IntermediateRepresentation(BaseModel):
     def has_fixes(self) -> bool:
         """是否有修复操作"""
         return len(self.fix_log) > 0
-

@@ -137,6 +137,7 @@ def ir_to_display_dict(ir: IntermediateRepresentation, semantic_model) -> Dict[s
         "comparison_type": getattr(ir, "comparison_type", None),
         "comparison_periods": getattr(ir, "comparison_periods", 1),
         "show_growth_rate": getattr(ir, "show_growth_rate", True),
+        "show_previous_period_value": getattr(ir, "show_previous_period_value", False),
         "cumulative_metrics": [get_metric_display(metric) for metric in getattr(ir, "cumulative_metrics", []) or []],
         "moving_average_window": getattr(ir, "moving_average_window", None),
         "moving_average_metrics": [get_metric_display(metric) for metric in getattr(ir, "moving_average_metrics", []) or []],

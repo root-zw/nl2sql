@@ -3683,7 +3683,9 @@ async def query(
         
         # 条件：有派生指标 或 有同比计算（无论是派生还是原子指标） 或 有计算字段
         has_derived = "derived:" in str(ir.metrics)
-        has_comparison = ir.comparison_type and ir.show_growth_rate
+        has_comparison = ir.comparison_type and (
+            ir.show_growth_rate or getattr(ir, "show_previous_period_value", False)
+        )
         has_calculated_fields = bool(getattr(ir, 'calculated_fields', None))
         
         if has_derived or has_comparison or has_calculated_fields:
@@ -3858,7 +3860,7 @@ async def query(
                 # 4. 为指标列添加单位，并记录格式化信息（移到外层，支持所有情况）
                 # 支持多种同比/增长率列名格式：
                 # - Pivot模式：2023年楼面地价、2024年楼面地价、楼面地价_增长率
-                # - Vertical模式：楼面地价、上年楼面地价、楼面地价_同比增长率
+                # - Vertical模式：楼面地价、楼面地价_同比增长率，必要时再附带上年楼面地价
                 
                 import re
                 

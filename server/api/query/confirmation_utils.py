@@ -230,6 +230,7 @@ def build_draft_confirmation_summary(
         ir_display.get("comparison_type"),
         int(ir_display.get("comparison_periods") or 1),
     )
+    show_previous_period_value = bool(ir_display.get("show_previous_period_value"))
     cumulative_metrics = [item for item in (ir_display.get("cumulative_metrics") or []) if item]
     moving_average_metrics = [item for item in (ir_display.get("moving_average_metrics") or []) if item]
     moving_average_window = ir_display.get("moving_average_window")
@@ -301,7 +302,8 @@ def build_draft_confirmation_summary(
 
     if comparison_text:
         growth_suffix = "，并显示增长率" if ir_display.get("show_growth_rate") else ""
-        parts.append(f"分析方式为【{comparison_text}】{growth_suffix}")
+        baseline_suffix = "，并展示上期值" if show_previous_period_value else ""
+        parts.append(f"分析方式为【{comparison_text}】{growth_suffix}{baseline_suffix}")
 
     if cumulative_metrics:
         parts.append(f"计算【{'、'.join(cumulative_metrics)}】累计值")
@@ -412,7 +414,8 @@ def build_safe_summary(
     )
     if comparison_text:
         growth_suffix = " + 增长率" if ir_display.get("show_growth_rate") else ""
-        normalized_constraints.append(f"分析方式：{comparison_text}{growth_suffix}")
+        baseline_suffix = " + 上期值" if ir_display.get("show_previous_period_value") else ""
+        normalized_constraints.append(f"分析方式：{comparison_text}{growth_suffix}{baseline_suffix}")
     cumulative_metrics = [str(item).strip() for item in (ir_display.get("cumulative_metrics") or []) if str(item).strip()]
     if cumulative_metrics:
         normalized_constraints.append(f"累计指标：{'、'.join(cumulative_metrics[:3])}")

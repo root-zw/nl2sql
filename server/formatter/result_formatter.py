@@ -287,6 +287,13 @@ class ResultFormatter:
         # - 如果 with_total=True：SQL已生成合计，保留它
         # - 如果 with_total=False：SQL未生成合计，格式化层添加
         should_add_total = not getattr(ir, "with_total", False)
+        is_comparison_query = bool(
+            getattr(ir, "comparison_type", None)
+            and (
+                getattr(ir, "show_growth_rate", False)
+                or getattr(ir, "show_previous_period_value", False)
+            )
+        )
 
         # 如果SQL未生成合计，过滤掉数据库中可能存在的合计行（防止重复）
         from server.utils.text_templates import get_total_keywords
@@ -402,7 +409,7 @@ class ResultFormatter:
                             logger.debug(f"已重新计算合计行中的派生指标 {col_name}: {recalculated_total}")
 
         # 添加合计行（仅当SQL未生成合计且是聚合查询时，且数据行大于1条）
-        if should_add_total and formatted_results and len(formatted_results) > 1 and ir.metrics and getattr(ir, "query_type", None) == "aggregation":
+        if should_add_total and formatted_results and len(formatted_results) > 1 and ir.metrics and getattr(ir, "query_type", None) == "aggregation" and not is_comparison_query:
             total_row = self._calculate_total_row_for_normal_table(
                 formatted_results,
                 column_names,
@@ -416,6 +423,8 @@ class ResultFormatter:
                 total_row = self._add_bold_style_to_row(total_row)
                 formatted_results.append(total_row)
                 logger.debug("已添加合计行到普通表格（SQL未生成合计）")
+        elif should_add_total and is_comparison_query:
+            logger.debug("同比/环比结果跳过格式化层合计行")
         elif should_add_total and len(formatted_results) == 1:
             logger.debug("只有1条数据，跳过合计行")
         elif not should_add_total:
@@ -3307,4 +3316,3 @@ def format_detail_row(row: Dict[str, Any], semantic_model=None) -> Dict[str, Any
             formatted[col] = converted_value
 
     return formatted
-

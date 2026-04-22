@@ -1,5 +1,6 @@
 """IR验证和修正模块"""
 
+import re
 from typing import List, Union, Any
 import structlog
 
@@ -110,6 +111,8 @@ class IRValidator:
         ir = self._apply_value_normalization(ir)
         # 2. 验证时间
         ir = self._validate_time_and_filters(ir)
+        # 2.1 趋势问法与明确同比/环比分流
+        ir = self._normalize_trend_comparison_intent(ir)
         # 3. 展开值包含关系（如"住宅用地"展开为"住宅用地"+"住宅、商服用地"）
         ir = self._expand_value_includes(ir)
         # 4. 最后移除冗余维度（此时filter已经是正确的IN操作了）
@@ -131,6 +134,121 @@ class IRValidator:
         # 12. 验证混合架构扩展字段（calculated_fields, conditional_metrics, ratio_metrics）
         ir = self._validate_extended_fields(ir)
         return ir
+
+    def _normalize_trend_comparison_intent(self, ir: IntermediateRepresentation) -> IntermediateRepresentation:
+        """
+        将“趋势/变化情况”与“明确同比/环比”分流。
+
+        原则：
+        - 用户明确说了“同比/环比/去年同期/增长率/涨跌幅”等对比语义时，保留 comparison_type
+        - 仅出现“趋势/走势/变化情况”等趋势语义，且查询覆盖多个时间点时，不默认做同比
+        """
+        comparison_type = getattr(ir, "comparison_type", None)
+        if not comparison_type:
+            return ir
+
+        question = str(getattr(ir, "original_question", "") or "")
+        normalized_question = re.sub(r"\s+", "", question).lower()
+        if not normalized_question:
+            return ir
+
+        if not self._has_multi_period_scope(ir):
+            return ir
+
+        explicit_comparison_keywords = (
+            "同比",
+            "环比",
+            "去年同期",
+            "上年同期",
+            "较上年",
+            "较去年",
+            "较上月",
+            "较上季度",
+            "较上周",
+            "比上年",
+            "比去年",
+            "比上月",
+            "比上季度",
+            "比上周",
+            "相比",
+            "对比",
+            "vs",
+            "增长率",
+            "变化率",
+            "涨幅",
+            "降幅",
+            "涨跌",
+            "增长",
+            "下降",
+            "上升",
+        )
+        if any(keyword in normalized_question for keyword in explicit_comparison_keywords):
+            return ir
+
+        trend_keywords = (
+            "趋势",
+            "走势",
+            "变化情况",
+            "变化趋势",
+            "历年变化",
+            "波动情况",
+            "波动趋势",
+        )
+        if not any(keyword in normalized_question for keyword in trend_keywords):
+            return ir
+
+        old_comparison_type = ir.comparison_type
+        old_show_growth_rate = bool(getattr(ir, "show_growth_rate", False))
+        old_show_previous = bool(getattr(ir, "show_previous_period_value", False))
+
+        ir.comparison_type = None
+        ir.show_growth_rate = False
+        ir.show_previous_period_value = False
+        self._add_note(
+            "检测到多期趋势问法且缺少明确同比/环比关键词，已取消默认同比展示，仅保留按时间展开的趋势结果。",
+            ir=ir,
+            action="clear_comparison_for_trend",
+            field="comparison_type",
+            original={
+                "comparison_type": old_comparison_type,
+                "show_growth_rate": old_show_growth_rate,
+                "show_previous_period_value": old_show_previous,
+            },
+            fixed={
+                "comparison_type": None,
+                "show_growth_rate": False,
+                "show_previous_period_value": False,
+            },
+        )
+        logger.info(
+            "趋势问法取消默认同比展示",
+            comparison_type=old_comparison_type,
+            show_growth_rate=old_show_growth_rate,
+            question=question[:120],
+        )
+        return ir
+
+    def _has_multi_period_scope(self, ir: IntermediateRepresentation) -> bool:
+        """判断查询是否覆盖多个时间点。"""
+        time_range = getattr(ir, "time", None)
+        if time_range and getattr(time_range, "type", None) == "relative":
+            last_n = int(getattr(time_range, "last_n", 0) or 0)
+            if last_n > 1:
+                return True
+
+        for filter_obj in getattr(ir, "filters", []) or []:
+            field_id = str(getattr(filter_obj, "field", "") or "")
+            if not field_id or not self._is_year_like_field(field_id):
+                continue
+
+            op = getattr(filter_obj, "op", None)
+            value = getattr(filter_obj, "value", None)
+            if op == "IN" and isinstance(value, list) and len(value) > 1:
+                return True
+            if op in [">=", ">", "<=", "<", "BETWEEN"]:
+                return True
+
+        return False
 
     def _validate_cross_partition_consistency(self, ir: IntermediateRepresentation) -> IntermediateRepresentation:
         """
