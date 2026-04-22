@@ -129,6 +129,29 @@ def _get_default_function_schema() -> Dict[str, Any]:
 SYSTEM_PROMPT = load_system_prompt()
 PRODUCE_IR_TOOL = load_function_schema()
 
+SCALAR_LITERAL_FIELD_SPECS: Dict[tuple, Dict[str, Any]] = {
+    ("query_type",): {
+        "allowed": ["aggregation", "detail", "duplicate_detection", "window_detail"],
+        "lower": True,
+    },
+    ("comparison_type",): {
+        "allowed": ["yoy", "mom", "qoq", "wow"],
+        "lower": True,
+    },
+    ("cross_partition_mode",): {
+        "allowed": ["union", "compare", "multi_join"],
+        "lower": True,
+    },
+    ("sort_order",): {
+        "allowed": ["asc", "desc"],
+        "lower": True,
+    },
+    ("join_strategy",): {
+        "allowed": ["matched", "left_unmatched", "right_unmatched"],
+        "lower": True,
+    },
+}
+
 
 
 
@@ -161,6 +184,8 @@ class NL2IRParser:
         self.last_validation_notes = None
         self.last_raw_ir_json: Dict[str, Any] | None = None
         self.last_retrieval_summary: Optional[Dict[str, Any]] = None
+        self.last_format_fix_notes: List[Dict[str, Any]] = []
+        self.last_validation_retry_feedback: Optional[str] = None
 
     async def parse(
         self,
@@ -197,6 +222,10 @@ class NL2IRParser:
             ParseError: 解析失败
         """
         self.last_retrieval_summary = None
+        self.last_validation_notes = None
+        self.last_raw_ir_json = None
+        self.last_format_fix_notes = []
+        self.last_validation_retry_feedback = None
 
         if retry_count is None:
             retry_count = settings.llm_max_retries
@@ -512,7 +541,7 @@ class NL2IRParser:
                 )
 
                 # 验证并构建 IR
-                ir = IntermediateRepresentation(**ir_json)
+                ir = self._build_ir_from_payload(ir_json)
 
                 logger.debug(
                     "IR 构建后",
@@ -727,14 +756,16 @@ class NL2IRParser:
                 logger.warning(f"IR 验证失败 (尝试 {attempt + 1})", error=error_msg)
 
                 if attempt < retry_count:
+                    feedback_message = self._build_validation_retry_feedback(e, ir_json)
+                    self.last_validation_retry_feedback = feedback_message
                     # 添加错误反馈到消息
                     messages.append({
                         "role": "assistant",
-                        "content": f"上次尝试失败，错误: {error_msg}。"
+                        "content": feedback_message
                     })
                     messages.append({
                         "role": "user",
-                        "content": "请修正错误，重新调用 produce_ir 函数。"
+                        "content": "请按上述要求修正错误后，仅重新调用 produce_ir 函数。"
                     })
                     continue
                 else:
@@ -772,6 +803,10 @@ class NL2IRParser:
         # 复用 parse 的整体流程，但在 user_prompt 末尾附加一段强约束反馈
         # 这里不增加额外的 validation 重试（由调用方控制次数）
         self.last_retrieval_summary = None
+        self.last_validation_notes = None
+        self.last_raw_ir_json = None
+        self.last_format_fix_notes = []
+        self.last_validation_retry_feedback = None
 
         if retry_count is None:
             retry_count = 0
@@ -856,7 +891,7 @@ class NL2IRParser:
         self.last_raw_ir_json = copy.deepcopy(ir_json)
         ir_json["original_question"] = question
         ir_json = self._fix_common_format_errors(ir_json)
-        ir = IntermediateRepresentation(**ir_json)
+        ir = self._build_ir_from_payload(ir_json)
         ir = self.validator.validate_and_fix(ir)
         # 修复：在补滤前设置 primary_table_id，避免枚举强补误引入跨连接字段
         try:
@@ -1537,7 +1572,7 @@ class NL2IRParser:
         payload = self._fix_common_format_errors(payload)
 
         try:
-            ir = IntermediateRepresentation(**payload)
+            ir = self._build_ir_from_payload(payload)
         except ValidationError as exc:
             logger.warning("Few-Shot直连执行失败：IR构建异常", error=str(exc))
             return None
@@ -2152,6 +2187,7 @@ class NL2IRParser:
             修正后的IR JSON数据
         """
         fixed_ir = ir_json.copy()
+        self._normalize_scalar_literal_fields(fixed_ir)
 
         # 修正metrics字段格式
         if "metrics" in fixed_ir:
@@ -2339,3 +2375,178 @@ class NL2IRParser:
                 fixed_ir[field_name] = []
 
         return fixed_ir
+
+    def _build_ir_from_payload(self, payload: Dict[str, Any]) -> IntermediateRepresentation:
+        """构建 IR，并对确定性的 literal_error 做一次本地修复。"""
+        try:
+            return IntermediateRepresentation(**payload)
+        except ValidationError as exc:
+            repaired_payload = self._repair_literal_validation_errors(payload, exc)
+            if not repaired_payload:
+                raise
+            return IntermediateRepresentation(**repaired_payload)
+
+    def _repair_literal_validation_errors(
+        self,
+        payload: Dict[str, Any],
+        error: ValidationError,
+    ) -> Optional[Dict[str, Any]]:
+        repaired_payload = copy.deepcopy(payload)
+        changed = False
+
+        for item in error.errors(include_url=False):
+            if item.get("type") != "literal_error":
+                continue
+
+            loc = tuple(item.get("loc") or ())
+            spec = SCALAR_LITERAL_FIELD_SPECS.get(loc)
+            if not spec:
+                continue
+
+            original_value = self._get_value_by_loc(repaired_payload, loc)
+            normalized_value = self._normalize_scalar_literal_value(
+                original_value,
+                lower=bool(spec.get("lower")),
+            )
+            if normalized_value == original_value:
+                continue
+            if normalized_value not in spec["allowed"]:
+                continue
+
+            self._set_value_by_loc(repaired_payload, loc, normalized_value)
+            self._record_format_fix(
+                self._format_error_loc(loc),
+                original_value,
+                normalized_value,
+                "validation_literal_repair",
+            )
+            changed = True
+
+        return repaired_payload if changed else None
+
+    def _build_validation_retry_feedback(
+        self,
+        error: ValidationError,
+        payload: Dict[str, Any],
+    ) -> str:
+        feedback_items = []
+
+        for item in error.errors(include_url=False):
+            if item.get("type") != "literal_error":
+                continue
+
+            loc = tuple(item.get("loc") or ())
+            spec = SCALAR_LITERAL_FIELD_SPECS.get(loc)
+            if not spec:
+                continue
+
+            feedback_items.append(
+                {
+                    "field": self._format_error_loc(loc),
+                    "current_value": self._get_value_by_loc(payload, loc),
+                    "allowed": spec["allowed"],
+                }
+            )
+
+        if feedback_items and len(feedback_items) <= 3:
+            lines = ["上次 produce_ir 参数不合法，请仅修正以下字段并重新调用 produce_ir："]
+            for item in feedback_items:
+                allowed_text = "/".join(item["allowed"])
+                lines.append(
+                    f"- {item['field']}: 当前值为 {item['current_value']!r}；合法值只能是 {allowed_text}"
+                )
+            lines.append("其余字段保持不变，不要重新改写整个 IR。")
+            return "\n".join(lines)
+
+        return f"上次尝试失败，错误: {str(error)}。"
+
+    def _normalize_scalar_literal_fields(self, payload: Dict[str, Any]) -> None:
+        """修正常见的 top-level 标量枚举格式错误。"""
+        for loc, spec in SCALAR_LITERAL_FIELD_SPECS.items():
+            if len(loc) != 1:
+                continue
+            field = loc[0]
+            if field not in payload:
+                continue
+
+            original_value = payload[field]
+            normalized_value = self._normalize_scalar_literal_value(
+                original_value,
+                lower=bool(spec.get("lower")),
+            )
+            if normalized_value == original_value:
+                continue
+            if normalized_value not in spec["allowed"]:
+                continue
+
+            payload[field] = normalized_value
+            self._record_format_fix(
+                field,
+                original_value,
+                normalized_value,
+                "scalar_literal_normalization",
+            )
+
+    @staticmethod
+    def _normalize_scalar_literal_value(value: Any, *, lower: bool = False) -> Any:
+        if not isinstance(value, str):
+            return value
+
+        normalized = value.strip()
+        for _ in range(2):
+            if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {"'", '"'}:
+                normalized = normalized[1:-1].strip()
+            else:
+                break
+
+        if lower:
+            normalized = normalized.lower()
+
+        return normalized
+
+    def _record_format_fix(self, field: str, original: Any, fixed: Any, reason: str) -> None:
+        if original == fixed:
+            return
+        self.last_format_fix_notes.append(
+            {
+                "field": field,
+                "original": original,
+                "fixed": fixed,
+                "reason": reason,
+            }
+        )
+
+    @staticmethod
+    def _format_error_loc(loc: tuple) -> str:
+        return ".".join(str(item) for item in loc) if loc else "<root>"
+
+    @staticmethod
+    def _get_value_by_loc(payload: Any, loc: tuple) -> Any:
+        current = payload
+        for part in loc:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            elif isinstance(current, list) and isinstance(part, int) and 0 <= part < len(current):
+                current = current[part]
+            else:
+                return None
+        return current
+
+    @staticmethod
+    def _set_value_by_loc(payload: Any, loc: tuple, value: Any) -> None:
+        current = payload
+        for part in loc[:-1]:
+            if isinstance(current, dict):
+                current = current[part]
+            elif isinstance(current, list) and isinstance(part, int):
+                current = current[part]
+            else:
+                raise KeyError(f"无法设置路径: {loc}")
+
+        last = loc[-1]
+        if isinstance(current, dict):
+            current[last] = value
+        elif isinstance(current, list) and isinstance(last, int):
+            current[last] = value
+        else:
+            raise KeyError(f"无法设置路径: {loc}")
