@@ -337,7 +337,7 @@
                       </div>
                     </template>
 
-                    <div v-if="hasVisibleResultActions(msg)" class="result-action-bar">
+                    <div v-if="hasVisibleResultActions(msg) && !hasVisibleRunningSessionActions(msg)" class="result-action-bar">
                       <button
                         v-for="action in getVisibleResultActions(msg)"
                         :key="action.key"
@@ -349,7 +349,7 @@
                       </button>
                     </div>
                     <div
-                      v-if="isResultRevisionActive(msg)"
+                      v-if="isResultRevisionActive(msg) && !hasVisibleRunningSessionActions(msg)"
                       class="result-action-note"
                     >
                       已进入修改模式，请在下方输入修改意见。
