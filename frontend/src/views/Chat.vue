@@ -355,6 +355,23 @@
                       已进入修改模式，请在下方输入修改意见。
                     </div>
 
+                    <div v-if="hasVisibleRunningSessionActions(msg)" class="running-session-panel">
+                      <div class="result-action-note running-session-note">
+                        {{ getRunningSessionActionHint(msg) }}
+                      </div>
+                      <div class="result-action-bar running-session-action-bar">
+                        <button
+                          v-for="action in getVisibleRunningSessionActions(msg)"
+                          :key="action.key"
+                          class="inline-session-btn"
+                          @click="action.onClick()"
+                          :disabled="action.disabled"
+                        >
+                          {{ action.label }}
+                        </button>
+                      </div>
+                    </div>
+
                     <!-- 加载中状态（无思考步骤和叙述内容时才显示） -->
                     <div v-if="(msg.status === 'pending' || (msg.status === 'running' && !msg.result_summary && !isNarrativeStreaming(msg))) && !hasThinkingSteps(msg) && getThinkingSteps(msg.message_id).length === 0" class="loading-indicator">
                       <div class="typing-indicator">
@@ -743,6 +760,7 @@ const adminEntryLabel = env.VITE_ADMIN_ENTRY_LABEL || '管理后台'
 const backendPort = env.VITE_BACKEND_PORT || '8000'
 const wsHost = env.VITE_WS_HOST || ''
 const API_BASE = ''  // API 基础路径（相对路径）
+const RUNNING_SESSION_SYNC_MIN_INTERVAL_MS = 800
 
 // ==================== 状态定义 ====================
 // 侧边栏
@@ -846,6 +864,7 @@ const chartTypes = reactive({})  // message_id -> chart type
 const legendFirstClick = reactive({})  // message_id -> boolean (是否已首次点击图例)
 const legendSelected = reactive({})  // message_id -> { seriesName: boolean } (图例选中状态)
 const resultActionLoadingIds = reactive({})
+const runningSessionContractSyncAt = reactive({})
 const resultReplyContext = ref(null)
 const messagesContainer = ref(null)
 const inputTextarea = ref(null)
@@ -1472,6 +1491,105 @@ function isResultActionBusy(msg) {
   return Boolean(msg?.query_id && resultActionLoadingIds[msg.query_id])
 }
 
+async function syncRunningSessionActionContract(queryId, { force = false } = {}) {
+  if (!queryId) return null
+
+  const now = Date.now()
+  const lastSyncedAt = runningSessionContractSyncAt[queryId] || 0
+  if (!force && now - lastSyncedAt < RUNNING_SESSION_SYNC_MIN_INTERVAL_MS) {
+    return getResultSessionSnapshot(queryId)
+  }
+
+  runningSessionContractSyncAt[queryId] = now
+  try {
+    return await loadResultSessionSnapshot(queryId, { force: true })
+  } catch (e) {
+    console.warn('同步运行态会话失败', e)
+    return getResultSessionSnapshot(queryId)
+  }
+}
+
+function getRunningSessionSnapshot(msg) {
+  if (!msg?.query_id || !['pending', 'running'].includes(msg.status)) return null
+  const snapshot = getResultSessionSnapshot(msg.query_id)
+  if (!snapshot || snapshot.status !== 'running') return null
+  return snapshot
+}
+
+function getRunningSessionSelectedTableNames(msg) {
+  const snapshot = getRunningSessionSnapshot(msg)
+  if (!snapshot) return []
+
+  const tableConstraint = (snapshot.confirmation_view?.context?.safe_summary?.known_constraints || [])
+    .find(item => typeof item === 'string' && (
+      item.startsWith('当前数据表：') || item.startsWith('当前涉及数据表：')
+    ))
+
+  if (tableConstraint) {
+    return tableConstraint
+      .replace(/^当前(涉及)?数据表：/, '')
+      .split('、')
+      .map(name => name.trim())
+      .filter(Boolean)
+  }
+
+  const draftNames = snapshot.confirmation_view?.draft?.selected_table_names
+  if (Array.isArray(draftNames) && draftNames.length > 0) {
+    return draftNames.filter(Boolean)
+  }
+
+  return []
+}
+
+function canUseRunningSessionAction(msg, actionType) {
+  const snapshot = getRunningSessionSnapshot(msg)
+  if (!snapshot) return false
+
+  const selectedTableIds = (
+    snapshot.confirmation_view?.dependency_meta?.selected_table_ids ||
+    snapshot.state?.selected_table_ids ||
+    []
+  ).filter(Boolean)
+
+  if (selectedTableIds.length === 0) return false
+
+  return (snapshot.confirmation_view?.pending_actions || []).includes(actionType)
+}
+
+function getRunningSessionActionHint(msg) {
+  const tableNames = getRunningSessionSelectedTableNames(msg)
+  if (tableNames.length > 0) {
+    return `当前已按 ${tableNames.join('、')} 继续处理，可随时改成重新推荐或手动选表。`
+  }
+  return '当前已完成选表并继续处理，可随时改成重新推荐或手动选表。'
+}
+
+function getVisibleRunningSessionActions(msg) {
+  if (!canUseRunningSessionAction(msg, 'change_table')) {
+    return []
+  }
+
+  const actionKey = msg?.message_id || msg?.query_id || 'running'
+  return [
+    {
+      key: `${actionKey}-running-change-table`,
+      label: '重新推荐表',
+      disabled: isResultActionBusy(msg),
+      onClick: () => requestRunningSessionTableReselection(msg)
+    },
+    {
+      key: `${actionKey}-running-manual-table`,
+      label: '手动选表',
+      disabled: isResultActionBusy(msg),
+      onClick: () => requestRunningSessionTableReselection(msg, { manualSelect: true })
+    }
+  ]
+}
+
+function hasVisibleRunningSessionActions(msg) {
+  return getVisibleRunningSessionActions(msg).length > 0
+}
+
 function isResultRevisionActive(msg) {
   return Boolean(msg?.query_id && resultReplyContext.value?.queryId === msg.query_id)
 }
@@ -1820,6 +1938,9 @@ async function executeQueryViaWebSocket(text, assistantMessageId, options = {}) 
       token: token ? `Bearer ${token}` : null
     }
     ws.send(JSON.stringify(payload))
+    if (currentQueryId.value) {
+      void syncRunningSessionActionContract(currentQueryId.value, { force: true })
+    }
   }
   
   ws.onmessage = (event) => {
@@ -1887,6 +2008,9 @@ async function handleWebSocketMessage(data, assistantMessageId) {
   
   switch (event) {
     case 'progress':
+      if (data.query_id || currentQueryId.value) {
+        void syncRunningSessionActionContract(data.query_id || currentQueryId.value)
+      }
       currentProgressText.value = payload.description || getProgressStepText(payload.step)
       updateAssistantMessage(assistantMessageId, { status: 'running' })
       // 更新进度步骤
@@ -1894,6 +2018,9 @@ async function handleWebSocketMessage(data, assistantMessageId) {
       break
     
     case 'thinking':
+      if (data.query_id || currentQueryId.value) {
+        void syncRunningSessionActionContract(data.query_id || currentQueryId.value)
+      }
       // 思考过程流式输出（类似 Deep Research 效果）
       updateThinkingStep(assistantMessageId, payload.step, payload.content, payload.done, payload.step_status)
       updateAssistantMessage(assistantMessageId, { status: 'running' })
@@ -1952,6 +2079,9 @@ async function handleWebSocketMessage(data, assistantMessageId) {
       break
       
     case 'result':
+      if (data.query_id || currentQueryId.value) {
+        void syncRunningSessionActionContract(data.query_id || currentQueryId.value, { force: true })
+      }
       // 接收到结果，清除进度流程
       clearPendingSessionState()
       progressSteps.value = []
@@ -2308,6 +2438,11 @@ async function handleSessionActionResult(result, {
   }
 
   if (result?.action?.action_type === 'change_table') {
+    const snapshotMessageId = snapshot?.message_id || snapshot?.session?.message_id || null
+    const runningMessage = snapshotMessageId ? findMessage(snapshotMessageId) : null
+    if (runningMessage && ['pending', 'running'].includes(runningMessage.status)) {
+      hideAssistantPlaceholder(snapshotMessageId)
+    }
     if (isManualTableOverride(snapshot)) {
       await expandAllTables()
     } else if (visibleCandidates.value.length === 0) {
@@ -2410,6 +2545,42 @@ async function requestTableReselection() {
     payload: { reason: '用户点击不是这张表' },
     preserveSelection: false
   })
+}
+
+async function requestRunningSessionTableReselection(msg, { manualSelect = false } = {}) {
+  if (!msg?.query_id) return null
+
+  resultActionLoadingIds[msg.query_id] = true
+  try {
+    const snapshot = await syncRunningSessionActionContract(msg.query_id, { force: true })
+    const pendingActions = snapshot?.confirmation_view?.pending_actions || []
+    if (!pendingActions.includes('change_table')) {
+      ElMessage.error('当前运行阶段暂不支持重新选表。')
+      return null
+    }
+
+    const actionType = snapshot?.confirmation_view?.dependency_meta?.action_bindings?.change_table || 'change_table'
+    const payload = manualSelect
+      ? { reason: '用户在运行态点击手动选表', mode: 'manual_select' }
+      : { reason: '用户在运行态点击重新推荐表' }
+
+    const res = await querySessionAPI.submitAction(msg.query_id, {
+      action_type: actionType,
+      payload,
+      draft_version: snapshot?.state?.draft_version || 1,
+      actor_type: 'user',
+      actor_id: currentUser.value?.user_id || 'anonymous',
+      idempotency_key: buildIdempotencyKey(manualSelect ? 'running-manual-table' : 'running-change-table')
+    })
+
+    return await handleSessionActionResult(res.data, { preserveSelection: false })
+  } catch (e) {
+    console.error('运行态重新选表失败', e)
+    ElMessage.error(e.response?.data?.detail || e.message || '运行态重新选表失败')
+    return null
+  } finally {
+    delete resultActionLoadingIds[msg.query_id]
+  }
 }
 
 async function requestManualTableSelection() {
@@ -4137,6 +4308,22 @@ watch(isLoggedIn, (val) => {
   margin-top: 8px;
   color: var(--text-secondary);
   font-size: 13px;
+}
+
+.running-session-panel {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(59, 130, 246, 0.06);
+  border: 1px solid rgba(59, 130, 246, 0.14);
+}
+
+.running-session-note {
+  margin-top: 0;
+}
+
+.running-session-action-bar {
+  margin-top: 10px;
 }
 
 .inline-session-btn {
