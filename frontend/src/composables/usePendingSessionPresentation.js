@@ -74,6 +74,17 @@ function mergeSummaryItems(...groups) {
   return merged
 }
 
+function buildRevisionSummaryItems(revisionText, existingItems = []) {
+  const normalizedRevisionText = normalizeSummaryItem(revisionText)
+  if (!normalizedRevisionText) return []
+
+  const hasExistingRevisionSummary = (existingItems || [])
+    .map(normalizeSummaryItem)
+    .some(item => item && item.includes('已吸收') && item.includes(normalizedRevisionText))
+
+  return hasExistingRevisionSummary ? [] : [`已吸收修改：${normalizedRevisionText}`]
+}
+
 const PENDING_SESSION_NODE_META = {
   table_resolution: {
     title: '请确认要使用的数据表',
@@ -155,18 +166,23 @@ export function usePendingSessionPresentation({
       const fallbackDraftUnderstandingItems = splitDraftUnderstandingItems(
         pendingConfirmationView.value?.draft?.natural_language || ''
       )
-      const revisionItems = revisionText ? [`已吸收修改：${revisionText}`] : []
 
       if (draftUnderstandingItems.length > 0) {
-        return mergeSummaryItems(revisionItems, draftUnderstandingItems)
+        return mergeSummaryItems(
+          buildRevisionSummaryItems(revisionText, draftUnderstandingItems),
+          draftUnderstandingItems
+        )
       }
       if (fallbackDraftUnderstandingItems.length > 0) {
-        return mergeSummaryItems(revisionItems, fallbackDraftUnderstandingItems)
+        return mergeSummaryItems(
+          buildRevisionSummaryItems(revisionText, fallbackDraftUnderstandingItems),
+          fallbackDraftUnderstandingItems
+        )
       }
 
       const fallback = pendingConfirmationView.value?.draft?.natural_language
         || '系统已生成新的查询草稿，请确认是否继续。'
-      return mergeSummaryItems(revisionItems, [fallback])
+      return mergeSummaryItems(buildRevisionSummaryItems(revisionText), [fallback])
     }
 
     return []

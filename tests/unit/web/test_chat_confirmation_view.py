@@ -230,6 +230,7 @@ def test_pending_session_presentation_composable_holds_node_display_contract():
     assert "function normalizeTableSummaryItem(text, prefix)" in content
     assert "function normalizeSummaryItem(item)" in content
     assert "function splitDraftUnderstandingItems(text)" in content
+    assert "function buildRevisionSummaryItems(revisionText, existingItems = [])" in content
     assert "for (const prefix of ['当前数据表：', '当前涉及数据表：'])" in content
     assert ".split('；')" in content
     assert "pendingConfirmationView.value?.draft?.natural_language || ''" in content
@@ -239,7 +240,9 @@ def test_pending_session_presentation_composable_holds_node_display_contract():
     assert "需要您确认后再继续生成 IR" not in content
     # draft_confirmation 分支不再把 safe_summary.known_constraints 合并到主气泡，避免与 natural_language 重复
     assert "draftSummaryItems.push(...safeConstraints)" not in content
-    assert "return mergeSummaryItems(revisionItems, draftUnderstandingItems)" in content
+    assert "buildRevisionSummaryItems(revisionText, draftUnderstandingItems)" in content
+    assert "buildRevisionSummaryItems(revisionText, fallbackDraftUnderstandingItems)" in content
+    assert "const revisionItems = revisionText ? [`已吸收修改：" not in content
 
 
 def test_chat_view_renders_structured_draft_confirmation_details():
