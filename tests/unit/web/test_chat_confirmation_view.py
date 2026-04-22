@@ -299,6 +299,13 @@ def test_chat_view_shows_result_details_before_narrative_finishes():
     assert "msg?.result_data?.rows?.length ||" not in content
 
 
+def test_chat_view_only_shows_empty_result_fallback_without_narrative_summary():
+    chat_view = ROOT_DIR / "frontend" / "src" / "views" / "Chat.vue"
+    content = chat_view.read_text(encoding="utf-8")
+
+    assert "msg.sql_text && !hasTableData(msg) && msg.status === 'completed' && !msg.result_summary" in content
+
+
 def test_chat_view_uses_stream_payload_to_prime_pending_session_cards():
     chat_view = ROOT_DIR / "frontend" / "src" / "views" / "Chat.vue"
     content = chat_view.read_text(encoding="utf-8")

@@ -331,7 +331,7 @@
                       </div>
 
                       <!-- 无数据时的提示：仅在有SQL但查询结果为空时显示 -->
-                      <div v-if="msg.sql_text && !hasTableData(msg) && msg.status === 'completed'" class="empty-result">
+                      <div v-if="msg.sql_text && !hasTableData(msg) && msg.status === 'completed' && !msg.result_summary" class="empty-result">
                         <p v-if="msg.result_data?.meta?.explain_only">SQL 已生成，未执行（仅生成SQL模式）</p>
                         <p v-else>查询结果为空</p>
                       </div>
