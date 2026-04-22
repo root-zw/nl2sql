@@ -126,6 +126,13 @@ class FakeActionDB:
         raise AssertionError(f"unexpected query: {query}")
 
 
+def test_resolve_pending_reply_supports_view_system_understanding_phrase():
+    result = DraftActionService.resolve_pending_reply("draft_confirmation", "查看系统理解")
+
+    assert result["resolution"] == "resolved_to_action"
+    assert result["action_type"] == "request_explanation"
+
+
 @pytest.mark.asyncio
 async def test_confirm_action_advances_table_resolution_to_draft_generation():
     db = FakeActionDB()
@@ -168,11 +175,13 @@ async def test_confirm_action_advances_table_resolution_to_draft_generation():
     assert result["action"]["action_type"] == "confirm"
     assert result["session"]["status"] == "running"
     assert result["session"]["current_node"] == "draft_generation"
+    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "request_explanation", "exit_current"]
     assert result["session"]["state_json"]["selected_table_ids"] == ["table_land_deal"]
-    assert result["session"]["state_json"]["draft_confirmation_required"] is True
-    assert result["session"]["state_json"]["draft_confirmation_approved"] is False
-    assert result["session"]["state_json"]["provisional_draft"] is None
-    assert result["session"]["state_json"]["draft_state"] is None
+    assert result["session"]["state_json"]["provisional_draft"]["status"] == "pending_generation"
+    assert result["session"]["state_json"]["provisional_draft"]["confirmation_required"] is True
+    assert "draft_state" not in result["session"]["state_json"]
+    assert "draft_confirmation_required" not in result["session"]["state_json"]
+    assert "draft_confirmation_approved" not in result["session"]["state_json"]
     assert result["resume_directive"]["should_resume"] is True
     assert result["resume_directive"]["text"] == "查询土地成交情况"
     assert result["resume_directive"]["ir"] is None
@@ -184,6 +193,42 @@ async def test_confirm_action_advances_table_resolution_to_draft_generation():
     assert learning_event["payload_json"]["action_type"] == "confirm"
     assert learning_event["payload_json"]["current_node"] == "table_resolution"
     assert learning_event["payload_json"]["next_node"] == "draft_generation"
+
+
+@pytest.mark.asyncio
+async def test_choose_table_alias_maps_to_confirm_action():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="awaiting_user_action",
+        current_node="table_resolution",
+        state_json={
+            "draft_version": 1,
+            "question_text": "查询土地成交情况",
+            "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
+            "recommended_table_ids": ["table_land_deal"],
+        },
+    )
+
+    service = DraftActionService(db)
+    result = await service.apply_action(
+        query_id=query_id,
+        action_type="choose_table",
+        payload={"selected_table_ids": ["table_land_deal"]},
+        natural_language_reply=None,
+        draft_version=1,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="choose-table-1",
+    )
+
+    assert result["action"]["action_type"] == "confirm"
+    assert result["session"]["current_node"] == "draft_generation"
+    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "request_explanation", "exit_current"]
+    assert result["session"]["state_json"]["selected_table_ids"] == ["table_land_deal"]
 
 
 @pytest.mark.asyncio
@@ -202,9 +247,16 @@ async def test_revise_action_advances_to_draft_generation_and_keeps_revision_req
             "pending_actions": ["execution_decision", "revise", "change_table", "request_explanation", "exit_current"],
             "selected_table_ids": ["table_land_deal"],
             "ir_snapshot": {"query_type": "aggregation"},
-            "draft_state": {
+            "confirmed_draft": {
+                "status": "confirmed",
                 "natural_language": "查询土地成交情况",
                 "draft_json": {"query_type": "aggregation"},
+                "warnings": [],
+                "suggestions": [],
+                "confirmed": True,
+                "confirmation_required": False,
+                "table_dependent": True,
+                "invalidate_on_table_change": True,
             },
             "execution_guard_state": {
                 "natural_language": "此查询将扫描约 100 万行数据",
@@ -228,11 +280,12 @@ async def test_revise_action_advances_to_draft_generation_and_keeps_revision_req
     assert result["action"]["action_type"] == "revise"
     assert result["session"]["status"] == "running"
     assert result["session"]["current_node"] == "draft_generation"
+    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "request_explanation", "exit_current"]
     assert result["session"]["state_json"]["revision_request"]["text"] == "改成查询武汉市"
-    assert result["session"]["state_json"]["draft_confirmation_required"] is True
-    assert result["session"]["state_json"]["draft_confirmation_approved"] is False
+    assert result["session"]["state_json"]["provisional_draft"]["status"] == "pending_generation"
+    assert result["session"]["state_json"]["provisional_draft"]["confirmation_required"] is True
     assert result["session"]["state_json"]["ir_snapshot"] is None
-    assert result["session"]["state_json"]["draft_state"] is None
+    assert "draft_state" not in result["session"]["state_json"]
     assert result["session"]["state_json"]["execution_guard_state"] is None
     assert result["resume_directive"]["should_resume"] is True
     assert result["resume_directive"]["text"] == "查询土地成交情况"
@@ -271,23 +324,25 @@ async def test_confirm_from_draft_confirmation_marks_draft_as_approved():
     service = DraftActionService(db)
     result = await service.apply_action(
         query_id=query_id,
-        action_type="confirm",
+        action_type="confirm_draft",
         payload={},
         natural_language_reply=None,
         draft_version=3,
         actor_type="user",
         actor_id="u1",
-        idempotency_key="draft-confirm-1",
+        idempotency_key="confirm-draft-1",
     )
 
     assert result["action"]["action_type"] == "confirm"
     assert result["session"]["current_node"] == "draft_generation"
-    assert result["session"]["state_json"]["draft_confirmation_approved"] is True
+    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "request_explanation", "exit_current"]
     assert result["session"]["state_json"]["provisional_draft"] is None
     assert result["session"]["state_json"]["confirmed_draft"]["status"] == "confirmed"
     assert result["session"]["state_json"]["confirmed_draft"]["natural_language"] == "按年份统计武汉土地成交均价"
     assert result["session"]["state_json"]["confirmed_draft"]["draft_json"] == {"query_type": "aggregation"}
     assert result["session"]["state_json"]["selected_table_ids"] == ["table_land_deal"]
+    assert result["session"]["state_json"]["revision_request"] is None
+    assert "draft_confirmation_approved" not in result["session"]["state_json"]
     assert result["resume_directive"]["should_resume"] is True
     assert result["resume_directive"]["text"] == "查询土地成交均价"
     assert result["resume_directive"]["ir"] == {"query_type": "aggregation"}
@@ -310,6 +365,17 @@ async def test_execution_approve_returns_resume_directive():
             "pending_actions": ["execution_decision", "revise", "change_table", "request_explanation", "exit_current"],
             "selected_table_ids": ["table_land_deal"],
             "ir_snapshot": {"query_type": "aggregation"},
+            "confirmed_draft": {
+                "status": "confirmed",
+                "natural_language": "按区域统计土地成交总价",
+                "draft_json": {"query_type": "aggregation"},
+                "warnings": ["涉及大表扫描"],
+                "suggestions": [],
+                "confirmed": True,
+                "confirmation_required": False,
+                "table_dependent": True,
+                "invalidate_on_table_change": True,
+            },
             "execution_guard_state": {
                 "natural_language": "此查询将扫描约 100 万行数据",
                 "ir": {"query_type": "aggregation"},
@@ -331,10 +397,101 @@ async def test_execution_approve_returns_resume_directive():
 
     assert result["session"]["current_node"] == "execution_approved"
     assert result["session"]["state_json"]["execution_guard_state"] is None
+    assert result["session"]["state_json"]["confirmed_draft"]["status"] == "confirmed"
+    assert result["session"]["state_json"]["confirmed_draft"]["natural_language"] == "按区域统计土地成交总价"
+    assert result["session"]["state_json"]["confirmed_draft"]["draft_json"] == {"query_type": "aggregation"}
     assert result["resume_directive"]["should_resume"] is True
     assert result["resume_directive"]["force_execute"] is True
     assert result["resume_directive"]["ir"] == {"query_type": "aggregation"}
     assert result["resume_directive"]["progress_text"] == "正在继续执行查询..."
+
+
+@pytest.mark.asyncio
+async def test_approve_execution_alias_maps_to_execution_decision():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="awaiting_user_action",
+        current_node="execution_guard",
+        state_json={
+            "draft_version": 4,
+            "question_text": "查询土地成交总价",
+            "pending_actions": ["execution_decision", "revise", "change_table", "request_explanation", "exit_current"],
+            "selected_table_ids": ["table_land_deal"],
+            "ir_snapshot": {"query_type": "aggregation"},
+            "confirmed_draft": {
+                "status": "confirmed",
+                "natural_language": "按区域统计土地成交总价",
+                "draft_json": {"query_type": "aggregation"},
+                "warnings": [],
+                "suggestions": [],
+                "confirmed": True,
+                "confirmation_required": False,
+                "table_dependent": True,
+                "invalidate_on_table_change": True,
+            },
+            "execution_guard_state": {
+                "natural_language": "此查询将扫描约 100 万行数据",
+                "ir": {"query_type": "aggregation"},
+            },
+        },
+    )
+
+    service = DraftActionService(db)
+    result = await service.apply_action(
+        query_id=query_id,
+        action_type="approve_execution",
+        payload={},
+        natural_language_reply=None,
+        draft_version=4,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="approve-execution-1",
+    )
+
+    assert result["action"]["action_type"] == "execution_decision"
+    assert result["action"]["payload_json"]["decision"] == "approve"
+    assert result["session"]["current_node"] == "execution_approved"
+
+
+@pytest.mark.asyncio
+async def test_manual_select_table_alias_maps_to_change_table_with_manual_override():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="awaiting_user_action",
+        current_node="table_resolution",
+        state_json={
+            "draft_version": 2,
+            "question_text": "查询土地成交情况",
+            "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
+            "selected_table_ids": ["table_land_deal"],
+            "recommended_table_ids": ["table_land_deal"],
+        },
+    )
+
+    service = DraftActionService(db)
+    result = await service.apply_action(
+        query_id=query_id,
+        action_type="manual_select_table",
+        payload={"reason": "用户改为手动选表"},
+        natural_language_reply=None,
+        draft_version=2,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="manual-select-table-1",
+    )
+
+    assert result["action"]["action_type"] == "change_table"
+    assert result["action"]["payload_json"]["mode"] == "manual_select"
+    assert result["session"]["current_node"] == "table_resolution"
+    assert result["session"]["state_json"]["manual_table_override"] is True
 
 
 @pytest.mark.asyncio
@@ -455,7 +612,7 @@ async def test_natural_language_change_table_invalidates_ir_artifacts():
     assert result["session"]["state_json"]["ir_snapshot"] is None
     assert result["session"]["state_json"]["sql_preview"] is None
     assert result["session"]["state_json"]["provisional_draft"] is None
-    assert result["session"]["state_json"]["draft_state"] is None
+    assert "draft_state" not in result["session"]["state_json"]
     assert result["session"]["state_json"]["execution_guard_state"] is None
     assert "table_land_deal" in result["session"]["state_json"]["rejected_table_ids"]
     assert result["interruption"]["requested"] is False
@@ -463,6 +620,90 @@ async def test_natural_language_change_table_invalidates_ir_artifacts():
     assert learning_event["payload_json"]["action_type"] == "change_table"
     assert learning_event["payload_json"]["previous_selected_table_ids"] == ["table_land_deal"]
     assert learning_event["payload_json"]["next_rejected_table_ids"] == ["table_land_deal"]
+
+
+@pytest.mark.asyncio
+async def test_change_table_is_allowed_on_failed_result_node():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="failed",
+        current_node="failed",
+        state_json={
+            "draft_version": 2,
+            "question_text": "查询土地成交总价",
+            "pending_actions": ["change_table", "revise", "request_explanation", "exit_current"],
+            "selected_table_ids": ["table_land_deal"],
+            "ir_ready": True,
+            "ir_snapshot": {"query_type": "aggregation"},
+            "confirmed_draft": {
+                "status": "confirmed",
+                "natural_language": "按区域统计土地成交总价",
+                "draft_json": {"query_type": "aggregation"},
+                "warnings": [],
+                "suggestions": [],
+                "confirmed": True,
+                "confirmation_required": False,
+                "table_dependent": True,
+                "invalidate_on_table_change": True,
+            },
+        },
+    )
+
+    service = DraftActionService(db)
+    result = await service.apply_action(
+        query_id=query_id,
+        action_type="change_table",
+        payload={"reason": "用户在失败结果态点击重新选表"},
+        natural_language_reply=None,
+        draft_version=2,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="failed-change-table-1",
+    )
+
+    assert result["action"]["action_type"] == "change_table"
+    assert result["session"]["current_node"] == "table_resolution"
+    assert result["session"]["state_json"]["pending_actions"] == ["confirm", "change_table", "request_explanation", "exit_current"]
+    assert result["session"]["state_json"]["confirmed_draft"] is None
+    assert result["session"]["state_json"]["ir_snapshot"] is None
+
+
+@pytest.mark.asyncio
+async def test_exit_current_is_not_allowed_on_completed_result_node():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="completed",
+        current_node="completed",
+        state_json={
+            "draft_version": 2,
+            "question_text": "查询土地成交总价",
+            "pending_actions": ["change_table", "revise", "request_explanation"],
+            "selected_table_ids": ["table_land_deal"],
+            "ir_ready": True,
+            "ir_snapshot": {"query_type": "aggregation"},
+        },
+    )
+
+    service = DraftActionService(db)
+    with pytest.raises(ValueError, match="当前节点 completed 不允许动作 exit_current"):
+        await service.apply_action(
+            query_id=query_id,
+            action_type="exit_current",
+            payload={"mode": "cancel", "source_text": "用户希望结束当前结果"},
+            natural_language_reply=None,
+            draft_version=2,
+            actor_type="user",
+            actor_id="u1",
+            idempotency_key="completed-exit-current-1",
+        )
 
 
 @pytest.mark.asyncio
@@ -524,6 +765,50 @@ async def test_change_table_requests_stop_signal_for_running_query(monkeypatch):
     assert result["interruption"]["registry_marked"] is True
     assert stop_calls == [str(message_id)]
     assert cancel_calls == [(query_id, user_id)]
+
+
+@pytest.mark.asyncio
+async def test_change_table_is_allowed_on_draft_generation_node():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="running",
+        current_node="draft_generation",
+        state_json={
+            "draft_version": 3,
+            "question_text": "查询土地成交总价",
+            "pending_actions": ["change_table", "request_explanation", "exit_current"],
+            "selected_table_ids": ["table_land_deal"],
+            "selected_table_id": "table_land_deal",
+            "table_resolution_state": {
+                "candidates": [
+                    {"table_id": "table_land_deal", "table_name": "土地成交表"},
+                    {"table_id": "table_land_plan", "table_name": "土地规划表"},
+                ],
+                "recommended_table_ids": ["table_land_deal"],
+            },
+        },
+    )
+
+    service = DraftActionService(db)
+    result = await service.apply_action(
+        query_id=query_id,
+        action_type="change_table",
+        payload={"reason": "运行中发现表选错了"},
+        natural_language_reply=None,
+        draft_version=3,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="running-change-table-1",
+    )
+
+    assert result["action"]["action_type"] == "change_table"
+    assert result["session"]["current_node"] == "table_resolution"
+    assert result["session"]["state_json"]["pending_actions"] == ["confirm", "change_table", "request_explanation", "exit_current"]
+    assert result["session"]["state_json"]["interruption_requested"] is True
 
 
 @pytest.mark.asyncio

@@ -110,9 +110,10 @@ async def list_governance_candidates(
 ):
     service = GovernanceCandidateService(db)
     items = await service.list_candidates(status=status, limit=limit)
+    total_count = await service.count_candidates(status=status)
     return GovernanceCandidateListResponse(
         items=[GovernanceCandidateItem(**item) for item in items],
-        total_count=len(items),
+        total_count=total_count,
     )
 
 

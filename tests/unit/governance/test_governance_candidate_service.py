@@ -41,6 +41,9 @@ class FakeGovernanceDB:
                     return row
             return None
 
+        if "FROM governance_candidates" in query and "WHERE candidate_id = $1" in query:
+            return self.candidates.get(params[0])
+
         if "INSERT INTO governance_candidates" in query:
             (
                 candidate_id,
@@ -75,13 +78,23 @@ class FakeGovernanceDB:
             self.candidates[candidate_id] = row
             return row
 
-        if "UPDATE governance_candidates" in query:
+        if "UPDATE governance_candidates" in query and "SET evidence_summary = $2" in query:
             candidate_id, evidence_summary, evidence_payload_json, support_count, confidence_score = params
             row = self.candidates[candidate_id]
             row["evidence_summary"] = evidence_summary
             row["evidence_payload_json"] = json.loads(evidence_payload_json)
             row["support_count"] = support_count
             row["confidence_score"] = Decimal(str(confidence_score))
+            return row
+
+        if "UPDATE governance_candidates" in query and "SET status = $2" in query:
+            candidate_id, status, reviewed_by = params
+            row = self.candidates.get(candidate_id)
+            if not row or row["status"] != "observed":
+                return None
+            row["status"] = status
+            row["reviewed_by"] = reviewed_by
+            row["reviewed_at"] = datetime.now(timezone.utc)
             return row
 
         raise AssertionError(f"unexpected fetchrow query: {query}")
@@ -105,6 +118,15 @@ class FakeGovernanceDB:
             return rows
 
         raise AssertionError(f"unexpected fetch query: {query}")
+
+    async def fetchval(self, query, *params):
+        if "SELECT COUNT(*)" not in query:
+            raise AssertionError(f"unexpected fetchval query: {query}")
+
+        status = params[0] if params else None
+        if status:
+            return sum(1 for row in self.candidates.values() if row["status"] == status)
+        return len(self.candidates)
 
 
 def build_change_table_event(event_key: str, *, table_id: str, created_offset: int = 0, mode: str | None = None):
@@ -194,3 +216,53 @@ async def test_observe_recent_learning_events_ignores_unsupported_events_and_lis
     assert len(items) == 1
     assert items[0]["target_object_id"] == "table_land_deal"
     assert items[0]["support_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_review_candidate_approve_updates_status_and_reviewer():
+    db = FakeGovernanceDB()
+    service = GovernanceCandidateService(db)
+    event = build_change_table_event("draft_action:1", table_id="table_land_deal")
+    created = await service.observe_learning_event(event)
+    candidate_id = UUID(created["candidate"]["candidate_id"])
+    reviewer_id = uuid4()
+
+    result = await service.review_candidate(
+        candidate_id,
+        action="approve",
+        reviewer_id=reviewer_id,
+    )
+
+    assert result is not None
+    assert result["status"] == "approved"
+    assert result["reviewed_by"] == str(reviewer_id)
+    assert result["reviewed_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_review_candidate_rejects_non_observed_candidate():
+    db = FakeGovernanceDB()
+    service = GovernanceCandidateService(db)
+    event = build_change_table_event("draft_action:1", table_id="table_land_deal")
+    created = await service.observe_learning_event(event)
+    candidate_id = UUID(created["candidate"]["candidate_id"])
+
+    await service.review_candidate(candidate_id, action="approve", reviewer_id=uuid4())
+
+    with pytest.raises(ValueError, match="不允许再次审核"):
+        await service.review_candidate(candidate_id, action="reject", reviewer_id=uuid4())
+
+
+@pytest.mark.asyncio
+async def test_count_candidates_respects_status_filter():
+    db = FakeGovernanceDB()
+    service = GovernanceCandidateService(db)
+    first = await service.observe_learning_event(build_change_table_event("draft_action:1", table_id="table_land_deal"))
+    await service.observe_learning_event(build_change_table_event("draft_action:2", table_id="table_land_plan"))
+
+    candidate_id = UUID(first["candidate"]["candidate_id"])
+    await service.review_candidate(candidate_id, action="approve", reviewer_id=uuid4())
+
+    assert await service.count_candidates() == 2
+    assert await service.count_candidates(status="observed") == 1
+    assert await service.count_candidates(status="approved") == 1

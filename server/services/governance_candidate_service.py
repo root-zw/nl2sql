@@ -20,6 +20,11 @@ from server.utils.json_utils import sanitize_for_json
 
 logger = structlog.get_logger()
 
+CANDIDATE_REVIEW_STATUS_MAP = {
+    "approve": "approved",
+    "reject": "rejected",
+}
+
 
 class GovernanceCandidateService:
     """治理候选观察服务"""
@@ -218,6 +223,102 @@ class GovernanceCandidateService:
                     limit,
                 )
         return [item for item in (self._row_to_dict(row) for row in rows) if item]
+
+    async def count_candidates(
+        self,
+        *,
+        status: Optional[str] = None,
+    ) -> int:
+        async with self._acquire() as conn:
+            if status:
+                count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM governance_candidates
+                    WHERE status = $1
+                    """,
+                    status,
+                )
+            else:
+                count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM governance_candidates
+                    """
+                )
+        return int(count or 0)
+
+    async def get_candidate(self, candidate_id: UUID) -> Optional[Dict[str, Any]]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT candidate_id, candidate_type, target_object_type, target_object_id,
+                       scope_type, scope_id, suggested_change_json, evidence_summary,
+                       evidence_payload_json, support_count, confidence_score, status,
+                       created_at, reviewed_at, reviewed_by
+                FROM governance_candidates
+                WHERE candidate_id = $1
+                """,
+                candidate_id,
+            )
+        return self._row_to_dict(row)
+
+    async def review_candidate(
+        self,
+        candidate_id: UUID,
+        *,
+        action: str,
+        reviewer_id: Optional[UUID],
+    ) -> Optional[Dict[str, Any]]:
+        target_status = CANDIDATE_REVIEW_STATUS_MAP.get(action)
+        if not target_status:
+            raise ValueError(f"不支持的治理候选审核动作: {action}")
+
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE governance_candidates
+                SET status = $2,
+                    reviewed_at = CURRENT_TIMESTAMP,
+                    reviewed_by = $3
+                WHERE candidate_id = $1
+                  AND status = 'observed'
+                RETURNING candidate_id, candidate_type, target_object_type, target_object_id,
+                          scope_type, scope_id, suggested_change_json, evidence_summary,
+                          evidence_payload_json, support_count, confidence_score, status,
+                          created_at, reviewed_at, reviewed_by
+                """,
+                candidate_id,
+                target_status,
+                reviewer_id,
+            )
+            if not row:
+                existing = await conn.fetchrow(
+                    """
+                    SELECT candidate_id, candidate_type, target_object_type, target_object_id,
+                           scope_type, scope_id, suggested_change_json, evidence_summary,
+                           evidence_payload_json, support_count, confidence_score, status,
+                           created_at, reviewed_at, reviewed_by
+                    FROM governance_candidates
+                    WHERE candidate_id = $1
+                    """,
+                    candidate_id,
+                )
+                existing_candidate = self._row_to_dict(existing)
+                if not existing_candidate:
+                    return None
+                raise ValueError(f"当前治理候选状态 {existing_candidate['status']} 不允许再次审核")
+
+        candidate = self._row_to_dict(row)
+        if candidate:
+            logger.info(
+                "治理候选已审核",
+                candidate_id=str(candidate_id),
+                action=action,
+                status=target_status,
+                reviewer_id=str(reviewer_id) if reviewer_id else None,
+            )
+        return candidate
 
     async def _find_existing_candidate(
         self,

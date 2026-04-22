@@ -41,6 +41,11 @@
             <span>数据权限管理</span>
           </el-menu-item>
 
+          <el-menu-item index="/admin/governance-candidates">
+            <el-icon><Document /></el-icon>
+            <span>治理候选</span>
+          </el-menu-item>
+
           <!-- 系统管理员专属 -->
           <template v-if="isSystemAdmin">
             <el-divider />
@@ -191,6 +196,7 @@ const menuNames = {
   '/admin/metadata': '元数据管理',
   '/admin/milvus': 'Milvus同步',
   '/admin/data-roles': '数据权限管理',
+  '/admin/governance-candidates': '治理候选',
   '/admin/monitor': '系统监控',
   '/admin/query-logs': '查询日志',
   '/admin/model-config': '模型配置',

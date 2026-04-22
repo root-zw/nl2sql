@@ -675,7 +675,7 @@ if user_rejects_current_table:
 
 建议前端使用位置：
 
-- Chat 输入区发送前的“本次确认策略”按钮组
+- Chat 输入区发送前的“确认策略”按钮组
 - Chat 页统一确认区的偏好开关
 - 会话级设置
 

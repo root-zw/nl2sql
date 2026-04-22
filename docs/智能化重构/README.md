@@ -64,10 +64,12 @@
 - 确认模式
   - 已新增 `CONFIRMATION_MODE`
   - 当前仓库默认值已切到 `always_confirm`
-  - Chat 提问区已支持“本次确认策略”按钮组，可单次覆盖为 `adaptive` / `always_confirm`
+  - Chat 提问区当前只显示 `adaptive` / `always_confirm` 两个可见选项；“跟随系统”已降为隐式默认态，不再单独暴露为第三个按钮
+  - `adaptive` 已接通真实判定，不再只是名称占位；当前会基于 IR 低置信度或 `ambiguities` 进入 `draft_confirmation`
 - 自动选表纠错
   - 高置信度自动选表成功后已保留 `candidate_snapshot`
   - `change_table` 已能打断运行中查询并回退到 `table_resolution`
+  - 运行中在 `table_selection` 思考阶段也已暴露重新选表入口，用户不必等到最终结果页才能纠错
 
 仍未落地的对象与能力：
 

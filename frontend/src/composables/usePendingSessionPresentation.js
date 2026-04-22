@@ -40,7 +40,8 @@ function splitDraftUnderstandingItems(text) {
   if (!strippedText) return []
 
   return strippedText
-    .split(/[；\n]/)
+    .split('；')
+    .flatMap(item => item.split('\n'))
     .map(item => item.trim().replace(/^[；。]+|[；。]+$/g, ''))
     .map(normalizeSummaryItem)
     .filter(Boolean)

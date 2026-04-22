@@ -111,6 +111,12 @@ const routes = [
         meta: { requiresAuth: true, title: '数据权限管理' }
       },
       {
+        path: 'governance-candidates',
+        name: 'AdminGovernanceCandidates',
+        component: () => import('@/views/admin/components/GovernanceCandidates.vue'),
+        meta: { requiresAuth: true, title: '治理候选' }
+      },
+      {
         path: 'auth-providers',
         name: 'AdminAuthProviders',
         component: () => import('@/views/admin/components/AuthProviderManage.vue'),

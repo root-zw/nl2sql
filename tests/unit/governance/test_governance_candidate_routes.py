@@ -50,9 +50,17 @@ def test_list_governance_candidates_route(monkeypatch):
             }
         ]
 
+    async def fake_count_candidates(self, status=None):
+        assert status == "observed"
+        return 3
+
     monkeypatch.setattr(
         "server.services.governance_candidate_service.GovernanceCandidateService.list_candidates",
         fake_list_candidates,
+    )
+    monkeypatch.setattr(
+        "server.services.governance_candidate_service.GovernanceCandidateService.count_candidates",
+        fake_count_candidates,
     )
     client = build_test_client()
 
@@ -60,7 +68,7 @@ def test_list_governance_candidates_route(monkeypatch):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["total_count"] == 1
+    assert payload["total_count"] == 3
     assert payload["items"][0]["target_object_id"] == "table_land_deal"
 
 

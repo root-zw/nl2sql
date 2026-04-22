@@ -1,8 +1,10 @@
 # Query Draft与澄清交互设计
 
+> 历史说明：本文早期关于“没有统一动作表、没有草稿版本号、没有统一确认主链路”的判断已经过期。当前实现请以 `server/api/query/routes.py`、`server/services/query_session_service.py`、`server/services/draft_action_service.py` 和 `17-Prompt编排、Skill分层与统一确认最终方案.md` / `18-统一确认现状与目标态落地路线图.md` 为准。
+
 ## 1. 文档信息
 
-- 状态：草案
+- 状态：历史草案（已过期，非当前实现真相源）
 - 对应总文档章节：`00-智能化重构总方案.md`
 - 最后更新时间：2026-04-17
 
