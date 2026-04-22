@@ -330,7 +330,9 @@ def build_draft_confirmation_summary(
     if revision_text:
         parts.append(f"本轮已吸收您的修改意见：{revision_text}")
 
-    return "；".join(parts) + "。请确认是否继续。"
+    if not parts:
+        return ""
+    return "；".join(parts) + "。"
 
 
 def build_draft_confirmation_open_points(

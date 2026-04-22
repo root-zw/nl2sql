@@ -97,10 +97,19 @@ class TableSelectionCard(BaseModel):
     recommended_table_ids: List[str] = []
 
 
+class UnderstandingItem(BaseModel):
+    """统一系统理解条目"""
+    text: str
+    anchors: List[str] = []
+    source: Literal["model", "system", "merged"] = "merged"
+    material: bool = True
+
+
 class ConfirmationCard(BaseModel):
     """确认卡（IR生成后的意图确认）"""
     ir: IntermediateRepresentation
-    natural_language: str  # 意图复述
+    natural_language: str  # 兼容旧版的单段意图复述
+    system_understanding: List[UnderstandingItem] = []  # 面向用户展示的统一理解列表
     confidence: Optional[float] = None
     ambiguities: List[str] = []
     open_points: List[str] = []

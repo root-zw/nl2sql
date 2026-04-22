@@ -56,6 +56,12 @@ from server.services.draft_action_service import DraftActionService
 from server.services.learning_event_service import LearningEventService
 from server.services.query_session_service import QuerySessionService
 from server.services.stop_signal_service import StopSignalService, QueryStoppedException
+from server.services.system_understanding_service import (
+    build_permission_scope_items,
+    build_system_understanding,
+    preview_default_filter_items,
+    summarize_understanding_items,
+)
 from server.utils.db_pool import get_metadata_pool
 from server.utils.json_utils import sanitize_for_json
 
@@ -369,6 +375,53 @@ async def _load_derived_metric_unit_map(connection_id: Optional[str]) -> Dict[st
         if display_name and unit:
             derived_units[display_name] = unit
     return derived_units
+
+
+async def _load_active_global_rules(
+    connection_id: Optional[str],
+    *,
+    domain_id: Optional[str] = None,
+    rule_types: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    if not connection_id:
+        return []
+
+    from server.dependencies import get_global_rules_loader
+
+    rules_loader = get_global_rules_loader(connection_id)
+    if not rules_loader:
+        return []
+
+    effective_rule_types = rule_types or ["derived_metric", "custom_instruction", "default_filter"]
+    domain_sequence = [domain_id] if domain_id else []
+    domain_sequence.append(None)
+
+    collected_rules: List[Dict[str, Any]] = []
+    seen_rule_ids: set[str] = set()
+
+    for candidate_domain in domain_sequence:
+        try:
+            rules = await rules_loader.load_active_rules(
+                rule_types=effective_rule_types,
+                domain_id=candidate_domain,
+            )
+        except Exception as exc:
+            logger.warning(
+                "加载全局规则失败",
+                connection_id=connection_id,
+                domain_id=candidate_domain,
+                error=str(exc),
+            )
+            continue
+
+        for rule in rules:
+            rule_id = str(rule.get("rule_id") or f"anon_{id(rule)}")
+            if rule_id in seen_rule_ids:
+                continue
+            seen_rule_ids.add(rule_id)
+            collected_rules.append(rule)
+
+    return collected_rules
 
 
 async def _build_ir_display_dict_with_units(
@@ -2838,6 +2891,7 @@ async def query(
             validation_loop = get_validation_loop()
         ir = await validation_loop.align_ir(ir, actual_connection_id)
         current_ir_display = await _build_ir_display_dict_with_units(ir, semantic_model, actual_connection_id)
+        understanding_ir_display = dict(current_ir_display or {})
 
         # 2.55 表/列权限校验（需先完成IR校正）
         await _enforce_schema_permissions(
@@ -2860,109 +2914,6 @@ async def query(
             resolved_ir_confidence = None
 
         ir_ambiguities = [str(item).strip() for item in list(getattr(ir, "ambiguities", []) or []) if str(item).strip()]
-        draft_confirmation_open_points = _build_draft_confirmation_open_points(
-            confidence=resolved_ir_confidence,
-            confidence_threshold=settings.confirm_low_confidence_threshold,
-            ambiguities=ir_ambiguities,
-            revision_request=existing_state.get("revision_request"),
-        )
-        should_pause_for_draft_confirmation = _should_pause_for_draft_confirmation(
-            confirmation_mode=confirmation_mode,
-            request_has_ir=bool(request.ir),
-            existing_requires_draft_confirmation=existing_requires_draft_confirmation,
-            existing_has_confirmed_draft=existing_has_confirmed_draft,
-            confidence=resolved_ir_confidence,
-            ambiguities=ir_ambiguities,
-            confidence_threshold=settings.confirm_low_confidence_threshold,
-        )
-        if should_pause_for_draft_confirmation:
-            selected_table_names: List[str] = []
-            if selected_table_ids:
-                try:
-                    selected_table_names = await _load_table_display_names(selected_table_ids)
-                except Exception as exc:
-                    logger.warning("加载确认阶段表名失败", query_id=query_id, error=str(exc))
-
-            draft_warnings: List[str] = []
-            if len(selected_table_ids) > 1:
-                draft_warnings.append(f"本次草稿基于 {len(selected_table_ids)} 张表的联合查询。")
-            if existing_state.get("revision_request"):
-                draft_warnings.append("已按您刚才的修改意见重算当前草稿。")
-            if (
-                confirmation_mode == "adaptive"
-                and resolved_ir_confidence is not None
-                and resolved_ir_confidence < settings.confirm_low_confidence_threshold
-            ):
-                draft_warnings.append(
-                    f"当前语义理解置信度 {resolved_ir_confidence:.0%}，低于自动放行阈值 {settings.confirm_low_confidence_threshold:.0%}。"
-                )
-            if ir_ambiguities:
-                draft_warnings.append(f"当前仍有 {len(ir_ambiguities)} 个待确认语义点。")
-
-            confirm_card = ConfirmationCard(
-                ir=ir,
-                natural_language=_build_draft_confirmation_summary(
-                    current_ir_display,
-                    selected_table_names=selected_table_names,
-                    revision_request=existing_state.get("revision_request"),
-                ),
-                confidence=resolved_ir_confidence,
-                ambiguities=ir_ambiguities,
-                open_points=draft_confirmation_open_points,
-                selected_table_names=selected_table_names,
-                warnings=draft_warnings,
-            )
-
-            tracer.finalize({"status": "draft_confirmation_needed"}, save_to_file=False)
-            response = QueryResponse(
-                status="confirm_needed",
-                confirmation=confirm_card,
-                auth_status=auth_status,
-                query_id=query_id,
-                timestamp=timestamp,
-            )
-            return await _return_streamed_query_response(
-                response,
-                status="awaiting_user_action",
-                current_node="draft_confirmation",
-                state_updates={
-                    "__delete_keys__": [
-                        "candidate_snapshot",
-                        "draft_state",
-                        "draft_confirmation_card",
-                        "draft_confirmation_required",
-                        "draft_confirmation_approved",
-                    ],
-                    "pending_actions": ["confirm", "revise", "change_table", "request_explanation", "exit_current"],
-                    "provisional_draft": QuerySessionService.build_provisional_draft_state(
-                        confirm_card,
-                        status="awaiting_confirmation",
-                        natural_language=confirm_card.natural_language,
-                        draft_json=sanitize_for_json(ir.model_dump()),
-                        warnings=list(confirm_card.warnings or []),
-                        suggestions=list(confirm_card.suggestions or []),
-                        confidence=confirm_card.confidence,
-                        ambiguities=list(confirm_card.ambiguities or []),
-                        open_points=list(confirm_card.open_points or []),
-                        selected_table_names=list(confirm_card.selected_table_names or []),
-                    ),
-                    "confirmed_draft": None,
-                    "ir_snapshot": sanitize_for_json(ir.model_dump()),
-                    "ir_ready": True,
-                    "selected_table_ids": selected_table_ids,
-                    "selected_table_id": effective_selected_table_id,
-                    "safe_summary": _build_safe_summary(
-                        question_text=request.text or existing_state.get("question_text"),
-                        analysis_context=analysis_context or existing_state.get("analysis_context"),
-                        domain_hint=ir.domain_name or request.domain_id or existing_state.get("domain_name") or existing_state.get("domain_id"),
-                        selected_table_names=selected_table_names,
-                        ir_display=current_ir_display,
-                        open_points=draft_confirmation_open_points,
-                    ),
-                },
-                stream_event={"type": "confirmation", "payload": confirm_card},
-            )
-
         # 2.6 权限过滤注入（如果用户已认证且启用RLS）
         permission_info = {"applied": False}
         if current_user and settings.rls_enabled:
@@ -3043,6 +2994,140 @@ async def query(
                 step.set_error(str(e))
                 tracer.end_step()
                 await _stream_progress(stream, step_name, "warning", f"权限注入失败: {e}")
+
+        current_ir_display = await _build_ir_display_dict_with_units(ir, semantic_model, actual_connection_id)
+        global_rules = await _load_active_global_rules(
+            actual_connection_id,
+            domain_id=getattr(ir, "domain_id", None),
+        )
+
+        selected_table_names: List[str] = []
+        if selected_table_ids:
+            try:
+                selected_table_names = await _load_table_display_names(selected_table_ids)
+            except Exception as exc:
+                logger.warning("加载确认阶段表名失败", query_id=query_id, error=str(exc))
+
+        draft_confirmation_open_points = _build_draft_confirmation_open_points(
+            confidence=resolved_ir_confidence,
+            confidence_threshold=settings.confirm_low_confidence_threshold,
+            ambiguities=ir_ambiguities,
+            revision_request=existing_state.get("revision_request"),
+        )
+        should_pause_for_draft_confirmation = _should_pause_for_draft_confirmation(
+            confirmation_mode=confirmation_mode,
+            request_has_ir=bool(request.ir),
+            existing_requires_draft_confirmation=existing_requires_draft_confirmation,
+            existing_has_confirmed_draft=existing_has_confirmed_draft,
+            confidence=resolved_ir_confidence,
+            ambiguities=ir_ambiguities,
+            confidence_threshold=settings.confirm_low_confidence_threshold,
+        )
+
+        default_filter_items = preview_default_filter_items(
+            ir,
+            semantic_model,
+            global_rules=global_rules,
+            selected_table_ids=selected_table_ids,
+        )
+        permission_scope_items = build_permission_scope_items(
+            permission_info,
+            semantic_model=semantic_model,
+        )
+        system_understanding = build_system_understanding(
+            ir_display=understanding_ir_display,
+            selected_table_names=selected_table_names,
+            model_understanding=getattr(parser, "last_model_understanding", []) if parser else [],
+            revision_request=existing_state.get("revision_request"),
+            default_filter_items=default_filter_items,
+            permission_scope_items=permission_scope_items,
+        )
+
+        if should_pause_for_draft_confirmation:
+            draft_warnings: List[str] = []
+            if len(selected_table_ids) > 1:
+                draft_warnings.append(f"本次草稿基于 {len(selected_table_ids)} 张表的联合查询。")
+            if existing_state.get("revision_request"):
+                draft_warnings.append("已按您刚才的修改意见重算当前草稿。")
+            if (
+                confirmation_mode == "adaptive"
+                and resolved_ir_confidence is not None
+                and resolved_ir_confidence < settings.confirm_low_confidence_threshold
+            ):
+                draft_warnings.append(
+                    f"当前语义理解置信度 {resolved_ir_confidence:.0%}，低于自动放行阈值 {settings.confirm_low_confidence_threshold:.0%}。"
+                )
+            if ir_ambiguities:
+                draft_warnings.append(f"当前仍有 {len(ir_ambiguities)} 个待确认语义点。")
+
+            confirm_card = ConfirmationCard(
+                ir=ir,
+                natural_language=(
+                    summarize_understanding_items(system_understanding)
+                    or _build_draft_confirmation_summary(
+                        understanding_ir_display,
+                        selected_table_names=selected_table_names,
+                        revision_request=existing_state.get("revision_request"),
+                    )
+                ),
+                system_understanding=system_understanding,
+                confidence=resolved_ir_confidence,
+                ambiguities=ir_ambiguities,
+                open_points=draft_confirmation_open_points,
+                selected_table_names=selected_table_names,
+                warnings=draft_warnings,
+            )
+
+            tracer.finalize({"status": "draft_confirmation_needed"}, save_to_file=False)
+            response = QueryResponse(
+                status="confirm_needed",
+                confirmation=confirm_card,
+                auth_status=auth_status,
+                query_id=query_id,
+                timestamp=timestamp,
+            )
+            return await _return_streamed_query_response(
+                response,
+                status="awaiting_user_action",
+                current_node="draft_confirmation",
+                state_updates={
+                    "__delete_keys__": [
+                        "candidate_snapshot",
+                        "draft_state",
+                        "draft_confirmation_card",
+                        "draft_confirmation_required",
+                        "draft_confirmation_approved",
+                    ],
+                    "pending_actions": ["confirm", "revise", "change_table", "request_explanation", "exit_current"],
+                    "provisional_draft": QuerySessionService.build_provisional_draft_state(
+                        confirm_card,
+                        status="awaiting_confirmation",
+                        natural_language=confirm_card.natural_language,
+                        system_understanding=[item.model_dump() for item in system_understanding],
+                        draft_json=sanitize_for_json(ir.model_dump()),
+                        warnings=list(confirm_card.warnings or []),
+                        suggestions=list(confirm_card.suggestions or []),
+                        confidence=confirm_card.confidence,
+                        ambiguities=list(confirm_card.ambiguities or []),
+                        open_points=list(confirm_card.open_points or []),
+                        selected_table_names=list(confirm_card.selected_table_names or []),
+                    ),
+                    "confirmed_draft": None,
+                    "ir_snapshot": sanitize_for_json(ir.model_dump()),
+                    "ir_ready": True,
+                    "selected_table_ids": selected_table_ids,
+                    "selected_table_id": effective_selected_table_id,
+                    "safe_summary": _build_safe_summary(
+                        question_text=request.text or existing_state.get("question_text"),
+                        analysis_context=analysis_context or existing_state.get("analysis_context"),
+                        domain_hint=ir.domain_name or request.domain_id or existing_state.get("domain_name") or existing_state.get("domain_id"),
+                        selected_table_names=selected_table_names,
+                        ir_display=understanding_ir_display,
+                        open_points=draft_confirmation_open_points,
+                    ),
+                },
+                stream_event={"type": "confirmation", "payload": confirm_card},
+            )
 
         # 3. 用户上下文
         user_context = {
@@ -3375,23 +3460,14 @@ async def query(
             await _stream_thinking(stream, "compile", "正在将查询意图编译为SQL语句...", done=False, step_status="started")
             step.set_input({"ir": ir.model_dump(), "user_context": user_context})
 
-            # 加载全局规则（包含派生指标）
-            global_rules = []
-            try:
-                from server.dependencies import get_global_rules_loader
-                rules_loader = get_global_rules_loader(actual_connection_id)
-                if rules_loader:
-                    global_rules = await rules_loader.load_active_rules(
-                        rule_types=['derived_metric', 'custom_instruction', 'default_filter'],
-                        domain_id=None
-                    )
-                    step.add_metadata("global_rules", {
-                        "count": len(global_rules),
-                        "rule_types": sorted({r.get("rule_type") for r in global_rules if r.get("rule_type")})
-                    })
-            except Exception as e:
-                logger.warning("加载全局规则失败", error=str(e))
-                step.add_metadata("global_rules_error", str(e))
+            # 复用确认前已加载的全局规则，避免重复请求
+            if 'global_rules' not in locals():
+                global_rules = []
+            if global_rules:
+                step.add_metadata("global_rules", {
+                    "count": len(global_rules),
+                    "rule_types": sorted({r.get("rule_type") for r in global_rules if r.get("rule_type")})
+                })
 
             try:
                 # 延迟初始化：在编译前创建 compiler

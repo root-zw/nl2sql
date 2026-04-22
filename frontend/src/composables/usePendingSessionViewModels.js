@@ -8,6 +8,16 @@ function looksLikeUuid(value) {
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim())
 }
 
+function extractUnderstandingTexts(items) {
+  return (Array.isArray(items) ? items : [])
+    .map(item => {
+      if (typeof item === 'string') return item.trim()
+      if (item && typeof item === 'object') return String(item.text || '').trim()
+      return ''
+    })
+    .filter(text => text && !looksLikeUuid(text))
+}
+
 export function usePendingSessionViewModels({
   pendingSessionSnapshot,
   pendingConfirm,
@@ -140,6 +150,7 @@ export function usePendingSessionViewModels({
 
     return {
       natural_language: viewCard.natural_language || '',
+      system_understanding: viewCard.system_understanding || [],
       warnings: viewCard.warnings || [],
       suggestions: viewCard.suggestions || [],
       confidence: viewCard.confidence ?? null,
@@ -283,8 +294,9 @@ export function usePendingSessionViewModels({
 
     if (currentSnapshot.current_node === 'draft_confirmation') {
       const draft = currentSnapshot.confirmation_view?.draft || null
+      const understandingLines = extractUnderstandingTexts(draft?.system_understanding)
       return [
-        draft?.natural_language || '',
+        understandingLines.length ? understandingLines.join('\n') : (draft?.natural_language || ''),
         pendingRevisionNote.value ? `当前已记录修改意见：${pendingRevisionNote.value}` : ''
       ].filter(Boolean).join('\n\n') || '当前处于草稿确认阶段，请确认是否继续。'
     }

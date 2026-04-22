@@ -173,6 +173,7 @@ def test_pending_session_view_models_composable_holds_pending_card_contract():
     content = composable.read_text(encoding="utf-8")
 
     assert "export function usePendingSessionViewModels({" in content
+    assert "function extractUnderstandingTexts(items)" in content
     assert "function buildPendingTableSelectionCard(snapshot)" in content
     assert "function buildPendingConfirmCard(snapshot, currentNode)" in content
     assert "function applyPendingSessionSnapshot(payload, options = {})" in content
@@ -185,6 +186,8 @@ def test_pending_session_view_models_composable_holds_pending_card_contract():
     assert "function buildPendingExplanation(snapshot = pendingSessionSnapshot.value)" in content
     assert "function getSnapshotSelectedTableNames(snapshot = pendingSessionSnapshot.value)" in content
     assert "allow_multi_select: true" in content
+    assert "system_understanding: viewCard.system_understanding || []" in content
+    assert "const understandingLines = extractUnderstandingTexts(draft?.system_understanding)" in content
     assert "当前涉及数据表：${selectedTableNames.join('、')}" in content
     assert "clearPendingSessionState({ keepQueryText: true })" in content
 
@@ -227,6 +230,9 @@ def test_pending_session_presentation_composable_holds_node_display_contract():
     assert "return looksLikeUuid(domainHint) ? '' : domainHint" in content
     assert "请从全部数据表中选择要查询的数据表，可单选，也可多选。" in content
     assert "需要您确认后再继续生成 IR" not in content
+    # draft_confirmation 分支不再把 safe_summary.known_constraints 合并到主气泡，避免与 natural_language 重复
+    assert "draftSummaryItems.push(...safeConstraints)" not in content
+    assert "return mergeSummaryItems(revisionItems, draftUnderstandingItems)" in content
 
 
 def test_chat_view_renders_structured_draft_confirmation_details():
@@ -240,6 +246,8 @@ def test_chat_view_renders_structured_draft_confirmation_details():
     assert "class=\"candidate-primary\"" in content
     assert "class=\"candidate-meta candidate-meta-inline\"" in content
     assert "class=\"candidate-meta-item\"" in content
+    assert "system_understanding: confirmation.system_understanding || []" in content
+    assert "system_understanding: draftCard.system_understanding" in content
     assert "pendingConfirm?.selected_table_names?.length" not in content
     assert "pendingConfirm?.confidence !== null" not in content
     assert "pendingConfirm?.open_points?.length" not in content

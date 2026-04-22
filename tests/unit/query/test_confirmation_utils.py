@@ -42,6 +42,20 @@ def test_build_draft_confirmation_summary_includes_core_ir_facts():
     assert "只看住宅用地" in summary
 
 
+def test_build_draft_confirmation_summary_does_not_append_cta_suffix():
+    summary = build_draft_confirmation_summary(
+        {
+            "metrics": ["成交总价"],
+            "dimensions": ["城市"],
+        },
+        selected_table_names=["土地成交表"],
+    )
+
+    assert summary
+    assert "请确认是否继续" not in summary
+    assert summary.endswith("。")
+
+
 def test_build_draft_confirmation_summary_includes_advanced_ir_semantics():
     summary = build_draft_confirmation_summary(
         {

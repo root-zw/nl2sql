@@ -63,13 +63,14 @@ def load_function_schema() -> Dict[str, Any]:
 
 def _get_default_system_prompt() -> str:
     """默认系统提示词（作为后备）"""
-    return """你是一个专业的数据分析助手。你的任务是将用户的自然语言问题转换为结构化的查询指令。
+    return """你是一个专业的数据分析助手。你的任务是将用户的自然语言问题转换为结构化的查询指令，并补充一组供用户确认的系统理解条目。
 
 核心原则：
 1. 严格基于候选项选择：只能从提供的候选指标和维度中选择，不能自己编造。
 2. 精确理解时间：具体日期使用 type=absolute，日期必须使用 ISO 格式字符串（YYYY-MM-DD）。
 3. 明确表达不确定性：如果有多种理解方式，请在 ambiguities 字段中说明。
 4. 保持简洁：不要过度解读，用户问什么就转换什么。
+5. 同时输出 4-7 条理解 bullets，使用自然语言说明系统准备如何查询，避免使用“当前数据表/统计指标/分析维度”这类标签话术。
 
 请严格调用 produce_ir 函数生成查询指令。"""
 
@@ -117,6 +118,27 @@ def _get_default_function_schema() -> Dict[str, Any]:
                         "minimum": 0,
                         "maximum": 1,
                         "description": "解析置信度"
+                    },
+                    "understanding": {
+                        "type": "object",
+                        "description": "给用户确认用的系统理解 bullets，必须与本次 IR 保持一致",
+                        "properties": {
+                            "bullets": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "text": {"type": "string", "description": "自然语言理解条目"},
+                                        "anchors": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": "可选：该条理解覆盖的语义锚点，如 table/metrics/filters/dimensions/comparison"
+                                        }
+                                    },
+                                    "required": ["text"]
+                                }
+                            }
+                        }
                     }
                 },
                 "required": ["metrics"]
@@ -183,6 +205,7 @@ class NL2IRParser:
         self.hierarchical_retriever = hierarchical_retriever
         self.last_validation_notes = None
         self.last_raw_ir_json: Dict[str, Any] | None = None
+        self.last_model_understanding: List[Dict[str, Any]] = []
         self.last_retrieval_summary: Optional[Dict[str, Any]] = None
         self.last_format_fix_notes: List[Dict[str, Any]] = []
         self.last_validation_retry_feedback: Optional[str] = None
@@ -224,6 +247,7 @@ class NL2IRParser:
         self.last_retrieval_summary = None
         self.last_validation_notes = None
         self.last_raw_ir_json = None
+        self.last_model_understanding = []
         self.last_format_fix_notes = []
         self.last_validation_retry_feedback = None
 
@@ -524,6 +548,8 @@ class NL2IRParser:
 
                 # 记录原始输出，便于追踪
                 self.last_raw_ir_json = copy.deepcopy(ir_json)
+                ir_json, model_understanding = self._extract_understanding_payload(ir_json)
+                self.last_model_understanding = model_understanding
 
                 # 添加原始问题
                 ir_json["original_question"] = question
@@ -805,6 +831,7 @@ class NL2IRParser:
         self.last_retrieval_summary = None
         self.last_validation_notes = None
         self.last_raw_ir_json = None
+        self.last_model_understanding = []
         self.last_format_fix_notes = []
         self.last_validation_retry_feedback = None
 
@@ -889,6 +916,8 @@ class NL2IRParser:
         if not ir_json:
             raise ParseError("LLM 未返回函数调用")
         self.last_raw_ir_json = copy.deepcopy(ir_json)
+        ir_json, model_understanding = self._extract_understanding_payload(ir_json)
+        self.last_model_understanding = model_understanding
         ir_json["original_question"] = question
         ir_json = self._fix_common_format_errors(ir_json)
         ir = self._build_ir_from_payload(ir_json)
@@ -1569,6 +1598,8 @@ class NL2IRParser:
             return None
 
         payload.setdefault("original_question", question)
+        payload, model_understanding = self._extract_understanding_payload(payload)
+        self.last_model_understanding = model_understanding
         payload = self._fix_common_format_errors(payload)
 
         try:
@@ -2423,6 +2454,49 @@ class NL2IRParser:
             changed = True
 
         return repaired_payload if changed else None
+
+    def _extract_understanding_payload(
+        self,
+        payload: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        """从 tool-call 参数中拆出 understanding sidecar，避免污染 IR 模型。"""
+        normalized_payload = copy.deepcopy(payload or {})
+        understanding = normalized_payload.pop("understanding", None)
+        bullets = []
+
+        if isinstance(understanding, dict):
+            raw_bullets = understanding.get("bullets") or []
+        elif isinstance(understanding, list):
+            raw_bullets = understanding
+        else:
+            raw_bullets = []
+
+        seen_texts: set[str] = set()
+        for item in raw_bullets:
+            if isinstance(item, str):
+                text = item.strip()
+                anchors = []
+            elif isinstance(item, dict):
+                text = str(item.get("text") or "").strip()
+                anchors = [
+                    str(anchor).strip()
+                    for anchor in (item.get("anchors") or [])
+                    if str(anchor).strip()
+                ]
+            else:
+                continue
+
+            if not text or text in seen_texts:
+                continue
+            seen_texts.add(text)
+            bullets.append({
+                "text": text,
+                "anchors": anchors,
+                "source": "model",
+                "material": True,
+            })
+
+        return normalized_payload, bullets
 
     def _build_validation_retry_feedback(
         self,

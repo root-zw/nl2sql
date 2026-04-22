@@ -273,6 +273,30 @@
           "maximum": 1,
           "description": "解析置信度(0-1)"
         },
+        "understanding": {
+          "type": "object",
+          "description": "给用户确认用的系统理解条目，必须与本次 IR 保持一致",
+          "properties": {
+            "bullets": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "description": "自然语言理解条目"
+                  },
+                  "anchors": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "可选：语义锚点，如 table/metrics/filters/dimensions/comparison"
+                  }
+                },
+                "required": ["text"]
+              }
+            }
+          }
+        },
         "ambiguities": {
           "type": "array",
           "items": {"type": "string"},

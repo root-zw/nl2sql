@@ -47,6 +47,17 @@ function splitDraftUnderstandingItems(text) {
     .filter(Boolean)
 }
 
+function extractUnderstandingTexts(items) {
+  return (Array.isArray(items) ? items : [])
+    .map(item => {
+      if (typeof item === 'string') return item
+      if (item && typeof item === 'object') return item.text || ''
+      return ''
+    })
+    .map(normalizeSummaryItem)
+    .filter(Boolean)
+}
+
 function mergeSummaryItems(...groups) {
   const merged = []
   const seen = new Set()
@@ -138,24 +149,24 @@ export function usePendingSessionPresentation({
     }
 
     if (pendingSessionNode.value === 'draft_confirmation') {
-      const draftUnderstandingItems = splitDraftUnderstandingItems(
+      const draftUnderstandingItems = extractUnderstandingTexts(
+        pendingConfirmationView.value?.draft?.system_understanding
+      )
+      const fallbackDraftUnderstandingItems = splitDraftUnderstandingItems(
         pendingConfirmationView.value?.draft?.natural_language || ''
       )
+      const revisionItems = revisionText ? [`已吸收修改：${revisionText}`] : []
 
-      const draftSummaryItems = []
-      if (revisionText) {
-        draftSummaryItems.push(`已吸收修改：${revisionText}`)
+      if (draftUnderstandingItems.length > 0) {
+        return mergeSummaryItems(revisionItems, draftUnderstandingItems)
       }
-      draftSummaryItems.push(...safeConstraints)
-      if (draftUnderstandingItems.length > 0 || draftSummaryItems.length > 0) {
-        return mergeSummaryItems(draftUnderstandingItems, draftSummaryItems)
+      if (fallbackDraftUnderstandingItems.length > 0) {
+        return mergeSummaryItems(revisionItems, fallbackDraftUnderstandingItems)
       }
-      if (draftSummaryItems.length === 0) {
-        draftSummaryItems.push(
-          pendingConfirmationView.value?.draft?.natural_language || '系统已生成新的查询草稿，请确认是否继续。'
-        )
-      }
-      return mergeSummaryItems(draftSummaryItems)
+
+      const fallback = pendingConfirmationView.value?.draft?.natural_language
+        || '系统已生成新的查询草稿，请确认是否继续。'
+      return mergeSummaryItems(revisionItems, [fallback])
     }
 
     return []

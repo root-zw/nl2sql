@@ -17,6 +17,7 @@ import structlog
 
 from server.utils.db_pool import get_metadata_pool
 from server.utils.json_utils import sanitize_for_json
+from server.services.system_understanding_service import normalize_understanding_items
 
 logger = structlog.get_logger()
 
@@ -182,6 +183,7 @@ class QuerySessionService:
         *,
         status: Optional[str] = None,
         natural_language: Optional[str] = None,
+        system_understanding: Optional[list[Any]] = None,
         draft_json: Optional[Dict[str, Any]] = None,
         warnings: Optional[list[Any]] = None,
         suggestions: Optional[list[Any]] = None,
@@ -209,6 +211,14 @@ class QuerySessionService:
             {
                 "status": status or draft_state.get("status"),
                 "natural_language": natural_language or draft_state.get("natural_language"),
+                "system_understanding": [
+                    item.model_dump()
+                    for item in normalize_understanding_items(
+                        system_understanding
+                        if system_understanding is not None
+                        else draft_state.get("system_understanding") or [],
+                    )
+                ],
                 "draft_json": draft_json if draft_json is not None else draft_state.get("draft_json") or draft_state.get("ir"),
                 "warnings": list(warnings if warnings is not None else draft_state.get("warnings") or []),
                 "suggestions": list(suggestions if suggestions is not None else draft_state.get("suggestions") or []),
@@ -256,6 +266,7 @@ class QuerySessionService:
         manual_table_override: Optional[bool] = None,
         allow_multi_select: Optional[bool] = None,
         natural_language: Optional[str] = None,
+        system_understanding: Optional[list[Any]] = None,
         draft_json: Optional[Dict[str, Any]] = None,
         warnings: Optional[list[Any]] = None,
         suggestions: Optional[list[Any]] = None,
@@ -281,6 +292,7 @@ class QuerySessionService:
             value is not None
             for value in (
                 natural_language,
+                system_understanding,
                 draft_json,
                 warnings,
                 suggestions,
@@ -290,13 +302,18 @@ class QuerySessionService:
                 invalidate_on_table_change,
             )
         ) or any(
-            draft_state.get(field) is not None
-            for field in ("natural_language", "draft_json", "status", "warnings", "suggestions")
+                draft_state.get(field) is not None
+            for field in ("natural_language", "system_understanding", "draft_json", "status", "warnings", "suggestions")
         ) and not draft_state.get("candidates"):
             return QuerySessionService.build_draft_state(
                 draft_state,
                 status=status or draft_state.get("status") or "provisional",
                 natural_language=natural_language or draft_state.get("natural_language"),
+                system_understanding=(
+                    system_understanding
+                    if system_understanding is not None
+                    else draft_state.get("system_understanding") or []
+                ),
                 draft_json=(
                     draft_json
                     if draft_json is not None
@@ -443,6 +460,7 @@ class QuerySessionService:
         payload: Optional[Any] = None,
         *,
         natural_language: Optional[str] = None,
+        system_understanding: Optional[list[Any]] = None,
         draft_json: Optional[Dict[str, Any]] = None,
         warnings: Optional[list[Any]] = None,
         suggestions: Optional[list[Any]] = None,
@@ -456,6 +474,11 @@ class QuerySessionService:
             draft_state,
             status="confirmed",
             natural_language=natural_language or draft_state.get("natural_language"),
+            system_understanding=(
+                system_understanding
+                if system_understanding is not None
+                else draft_state.get("system_understanding") or []
+            ),
             draft_json=(
                 draft_json
                 if draft_json is not None
@@ -516,6 +539,7 @@ class QuerySessionService:
             else base_draft.get("draft_json") or base_draft.get("ir") or ir_snapshot or None
         )
         resolved_natural_language = base_draft.get("natural_language")
+        resolved_system_understanding = list(base_draft.get("system_understanding") or [])
         resolved_warnings = list(base_draft.get("warnings") or [])
         resolved_suggestions = list(base_draft.get("suggestions") or [])
         resolved_confidence = base_draft.get("confidence")
@@ -525,6 +549,7 @@ class QuerySessionService:
 
         if not any([
             resolved_natural_language,
+            resolved_system_understanding,
             resolved_draft_json,
             resolved_warnings,
             resolved_suggestions,
@@ -536,6 +561,7 @@ class QuerySessionService:
         return QuerySessionService.build_confirmed_draft_state(
             base_draft,
             natural_language=resolved_natural_language,
+            system_understanding=resolved_system_understanding,
             draft_json=resolved_draft_json,
             warnings=resolved_warnings,
             suggestions=resolved_suggestions,
@@ -777,6 +803,7 @@ class QuerySessionService:
         if provisional_draft:
             status = provisional_draft.get("status") or "provisional"
             natural_language = provisional_draft.get("natural_language")
+            system_understanding = list(provisional_draft.get("system_understanding") or [])
             draft_json = provisional_draft.get("draft_json")
             warnings = list(provisional_draft.get("warnings") or [])
             suggestions = list(provisional_draft.get("suggestions") or [])
@@ -790,6 +817,7 @@ class QuerySessionService:
         elif confirmed_draft:
             status = confirmed_draft.get("status") or "confirmed"
             natural_language = confirmed_draft.get("natural_language")
+            system_understanding = list(confirmed_draft.get("system_understanding") or [])
             draft_json = confirmed_draft.get("draft_json")
             warnings = list(confirmed_draft.get("warnings") or [])
             suggestions = list(confirmed_draft.get("suggestions") or [])
@@ -803,6 +831,7 @@ class QuerySessionService:
         elif table_resolution_provisional_draft:
             status = table_resolution_provisional_draft.get("status") or "provisional"
             natural_language = table_resolution_provisional_draft.get("natural_language")
+            system_understanding = list(table_resolution_provisional_draft.get("system_understanding") or [])
             draft_json = table_resolution_provisional_draft.get("draft_json")
             warnings = list(table_resolution_provisional_draft.get("warnings") or [])
             suggestions = list(table_resolution_provisional_draft.get("suggestions") or [])
@@ -832,6 +861,10 @@ class QuerySessionService:
             "table_dependent": bool(table_dependent),
             "invalidate_on_table_change": bool(invalidate_on_table_change),
             "natural_language": natural_language,
+            "system_understanding": [
+                item.model_dump()
+                for item in normalize_understanding_items(system_understanding)
+            ],
             "draft_json": draft_json,
             "warnings": warnings,
             "suggestions": suggestions,

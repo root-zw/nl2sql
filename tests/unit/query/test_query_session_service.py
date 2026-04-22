@@ -428,6 +428,10 @@ async def test_update_session_derives_confirmation_view_for_draft_confirmation()
             "provisional_draft": {
                 "status": "awaiting_confirmation",
                 "natural_language": "按年份统计武汉土地成交均价",
+                "system_understanding": [
+                    {"text": "我会按年份统计武汉土地成交均价。", "source": "model"},
+                    {"text": "系统默认只统计审核状态为“已审核”的记录。", "source": "system"},
+                ],
                 "warnings": ["统计口径依赖成交公告时间"],
                 "draft_json": {"query_type": "aggregation"},
                 "confidence": 0.64,
@@ -445,6 +449,10 @@ async def test_update_session_derives_confirmation_view_for_draft_confirmation()
     confirmation_view = updated["confirmation_view"]
     assert confirmation_view["draft"]["status"] == "awaiting_confirmation"
     assert confirmation_view["draft"]["natural_language"] == "按年份统计武汉土地成交均价"
+    assert confirmation_view["draft"]["system_understanding"] == [
+        {"text": "我会按年份统计武汉土地成交均价。", "anchors": [], "source": "model", "material": True},
+        {"text": "系统默认只统计审核状态为“已审核”的记录。", "anchors": [], "source": "system", "material": True},
+    ]
     assert confirmation_view["draft"]["warnings"] == ["统计口径依赖成交公告时间"]
     assert confirmation_view["draft"]["confidence"] == 0.64
     assert confirmation_view["draft"]["open_points"] == ["当前语义理解置信度偏低，请确认统计口径。"]
@@ -587,6 +595,9 @@ def test_build_downstream_confirmed_draft_state_prefers_explicit_confirmed_draft
             "confirmed_draft": {
                 "status": "confirmed",
                 "natural_language": "按年份统计武汉土地成交均价",
+                "system_understanding": [
+                    {"text": "我会按年份统计武汉土地成交均价。", "source": "model"},
+                ],
                 "draft_json": {"query_type": "aggregation"},
                 "warnings": ["统计口径依赖成交公告时间"],
                 "suggestions": [],
@@ -602,6 +613,9 @@ def test_build_downstream_confirmed_draft_state_prefers_explicit_confirmed_draft
     assert confirmed_draft is not None
     assert confirmed_draft["status"] == "confirmed"
     assert confirmed_draft["natural_language"] == "按年份统计武汉土地成交均价"
+    assert confirmed_draft["system_understanding"] == [
+        {"text": "我会按年份统计武汉土地成交均价。", "anchors": [], "source": "model", "material": True},
+    ]
     assert confirmed_draft["draft_json"] == {"query_type": "aggregation", "filters": ["rls"]}
     assert confirmed_draft["warnings"] == ["统计口径依赖成交公告时间"]
     assert confirmed_draft["confirmed"] is True

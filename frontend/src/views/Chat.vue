@@ -1274,6 +1274,7 @@ function applyPendingStreamSnapshot({
   if (currentNode === 'draft_confirmation' && confirmation) {
     const draftCard = {
       natural_language: confirmation.natural_language || '',
+      system_understanding: confirmation.system_understanding || [],
       warnings: confirmation.warnings || [],
       suggestions: confirmation.suggestions || [],
       confidence: confirmation.confidence ?? null,
@@ -1289,6 +1290,7 @@ function applyPendingStreamSnapshot({
     nextState.provisional_draft = {
       status: 'awaiting_confirmation',
       natural_language: draftCard.natural_language,
+      system_understanding: draftCard.system_understanding,
       draft_json: draftCard.draft_json,
       warnings: draftCard.warnings,
       suggestions: draftCard.suggestions,
