@@ -81,6 +81,65 @@ def _sanitize_summary_items(items: Optional[List[Any]]) -> List[str]:
     return normalized_items
 
 
+def _format_filter_value(value: Any) -> str:
+    if isinstance(value, list):
+        return "、".join(str(item) for item in value)
+    if isinstance(value, tuple):
+        return "、".join(str(item) for item in value)
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _format_filter_condition(condition: Dict[str, Any]) -> str:
+    field = condition.get("field")
+    op = condition.get("op")
+    value = condition.get("value")
+    if not field or not op:
+        return ""
+    if op in {"IS NULL", "IS NOT NULL"}:
+        return f"【{field}】{op}"
+    return f"【{field}】{op}{_format_filter_value(value)}"
+
+
+def _extract_named_items(items: Optional[List[Dict[str, Any]]], key: str = "alias") -> List[str]:
+    names: List[str] = []
+    seen: set[str] = set()
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get(key) or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        names.append(value)
+    return names
+
+
+def _describe_comparison_type(comparison_type: Optional[str], periods: int = 1) -> str:
+    label_map = {
+        "yoy": "同比",
+        "mom": "环比",
+        "qoq": "季度环比",
+        "wow": "周环比",
+    }
+    label = label_map.get(str(comparison_type or "").strip(), "")
+    if not label:
+        return ""
+    if periods and periods > 1:
+        return f"{label}（对比前{periods}期）"
+    return label
+
+
+def _describe_cross_partition_mode(mode: Optional[str]) -> str:
+    mode_map = {
+        "union": "跨表合并",
+        "compare": "跨表对比",
+        "multi_join": "多表关联",
+    }
+    return mode_map.get(str(mode or "").strip(), "")
+
+
 def compose_question_with_revision(
     question_text: Optional[str],
     revision_request: Optional[Dict[str, Any]],
@@ -151,12 +210,34 @@ def build_draft_confirmation_summary(
     selected_table_names: Optional[List[str]] = None,
     revision_request: Optional[Dict[str, Any]] = None,
 ) -> str:
+    query_type = str(ir_display.get("query_type") or "aggregation")
     table_names = _sanitize_table_names(selected_table_names)
     metrics = [item for item in (ir_display.get("metrics") or []) if item]
     dimensions = [item for item in (ir_display.get("dimensions") or []) if item]
+    duplicate_by = [item for item in (ir_display.get("duplicate_by") or []) if item]
+    partition_by = [item for item in (ir_display.get("partition_by") or []) if item]
+    window_limit = ir_display.get("window_limit")
     filters = ir_display.get("filters") or []
     order_by = ir_display.get("order_by") or []
+    sort_by = ir_display.get("sort_by")
+    sort_order = str(ir_display.get("sort_order") or "desc")
     limit = ir_display.get("limit")
+    with_total = bool(ir_display.get("with_total"))
+    ratio_metric_names = _extract_named_items(ir_display.get("ratio_metrics"))
+    conditional_metric_names = _extract_named_items(ir_display.get("conditional_metrics"))
+    calculated_field_names = _extract_named_items(ir_display.get("calculated_fields"))
+    comparison_text = _describe_comparison_type(
+        ir_display.get("comparison_type"),
+        int(ir_display.get("comparison_periods") or 1),
+    )
+    cumulative_metrics = [item for item in (ir_display.get("cumulative_metrics") or []) if item]
+    moving_average_metrics = [item for item in (ir_display.get("moving_average_metrics") or []) if item]
+    moving_average_window = ir_display.get("moving_average_window")
+    cross_partition_text = (
+        _describe_cross_partition_mode(ir_display.get("cross_partition_mode"))
+        if ir_display.get("cross_partition_query")
+        else ""
+    )
     time_text = describe_time_range(ir_display.get("time"))
     revision_text = get_revision_text(revision_request)
 
@@ -166,26 +247,67 @@ def build_draft_confirmation_summary(
     else:
         parts.append("我要继续按当前已选语义草稿生成查询")
 
-    if metrics:
-        parts.append(f"统计【{'、'.join(metrics)}】")
-    elif dimensions:
-        parts.append(f"返回【{'、'.join(dimensions)}】")
+    if query_type == "duplicate_detection":
+        if duplicate_by:
+            parts.append(f"识别按【{'、'.join(duplicate_by)}】判定的重复记录")
+        else:
+            parts.append("识别重复记录")
+    elif query_type == "window_detail":
+        if partition_by and window_limit:
+            parts.append(f"按【{'、'.join(partition_by)}】分组取前 {window_limit} 条明细")
+        elif window_limit:
+            parts.append(f"返回前 {window_limit} 条窗口明细")
+        else:
+            parts.append("返回窗口明细")
+        if dimensions:
+            parts.append(f"展示字段为【{'、'.join(dimensions)}】")
+    elif query_type == "detail":
+        if dimensions:
+            parts.append(f"返回明细字段【{'、'.join(dimensions)}】")
+        else:
+            parts.append("返回明细记录")
+        if sort_by:
+            parts.append(f"按【{sort_by}】{'降序' if sort_order == 'desc' else '升序'}排列")
+    else:
+        if metrics:
+            parts.append(f"统计【{'、'.join(metrics)}】")
+        elif dimensions:
+            parts.append(f"返回【{'、'.join(dimensions)}】")
 
-    if dimensions and metrics:
-        parts.append(f"按【{'、'.join(dimensions)}】展开")
+        if dimensions and (metrics or ratio_metric_names or conditional_metric_names or calculated_field_names):
+            parts.append(f"按【{'、'.join(dimensions)}】展开")
+
+    if ratio_metric_names:
+        parts.append(f"计算占比指标【{'、'.join(ratio_metric_names)}】")
+
+    if conditional_metric_names:
+        parts.append(f"补充条件指标【{'、'.join(conditional_metric_names)}】")
+
+    if calculated_field_names:
+        parts.append(f"计算字段【{'、'.join(calculated_field_names)}】")
 
     filter_parts: List[str] = []
     for condition in filters:
-        field = condition.get("field")
-        op = condition.get("op")
-        value = condition.get("value")
-        if field and op:
-            filter_parts.append(f"【{field}】{op}{repr(value)}")
+        if not isinstance(condition, dict):
+            continue
+        rendered = _format_filter_condition(condition)
+        if rendered:
+            filter_parts.append(rendered)
     if filter_parts:
         parts.append(f"筛选条件为 {'、'.join(filter_parts)}")
 
     if time_text:
         parts.append(f"时间范围为【{time_text}】")
+
+    if comparison_text:
+        growth_suffix = "，并显示增长率" if ir_display.get("show_growth_rate") else ""
+        parts.append(f"分析方式为【{comparison_text}】{growth_suffix}")
+
+    if cumulative_metrics:
+        parts.append(f"计算【{'、'.join(cumulative_metrics)}】累计值")
+
+    if moving_average_metrics and moving_average_window:
+        parts.append(f"计算【{'、'.join(moving_average_metrics)}】的 {moving_average_window} 期移动平均")
 
     if order_by:
         order_parts = []
@@ -198,6 +320,12 @@ def build_draft_confirmation_summary(
 
     if limit:
         parts.append(f"结果条数限制为 {limit}")
+
+    if with_total:
+        parts.append("结果会附带合计行")
+
+    if cross_partition_text:
+        parts.append(f"查询方式为【{cross_partition_text}】")
 
     if revision_text:
         parts.append(f"本轮已吸收您的修改意见：{revision_text}")
@@ -263,10 +391,35 @@ def build_safe_summary(
 
     if metrics:
         normalized_constraints.append(f"统计指标：{'、'.join(metrics[:3])}")
+    ratio_metric_names = _extract_named_items(ir_display.get("ratio_metrics"))
+    if ratio_metric_names:
+        normalized_constraints.append(f"占比指标：{'、'.join(ratio_metric_names[:3])}")
+    conditional_metric_names = _extract_named_items(ir_display.get("conditional_metrics"))
+    if conditional_metric_names:
+        normalized_constraints.append(f"条件指标：{'、'.join(conditional_metric_names[:3])}")
+    calculated_field_names = _extract_named_items(ir_display.get("calculated_fields"))
+    if calculated_field_names:
+        normalized_constraints.append(f"计算字段：{'、'.join(calculated_field_names[:3])}")
     if dimensions:
         normalized_constraints.append(f"分析维度：{'、'.join(dimensions[:3])}")
     if time_text:
         normalized_constraints.append(f"时间范围：{time_text}")
+    comparison_text = _describe_comparison_type(
+        ir_display.get("comparison_type"),
+        int(ir_display.get("comparison_periods") or 1),
+    )
+    if comparison_text:
+        growth_suffix = " + 增长率" if ir_display.get("show_growth_rate") else ""
+        normalized_constraints.append(f"分析方式：{comparison_text}{growth_suffix}")
+    cumulative_metrics = [str(item).strip() for item in (ir_display.get("cumulative_metrics") or []) if str(item).strip()]
+    if cumulative_metrics:
+        normalized_constraints.append(f"累计指标：{'、'.join(cumulative_metrics[:3])}")
+    moving_average_metrics = [str(item).strip() for item in (ir_display.get("moving_average_metrics") or []) if str(item).strip()]
+    moving_average_window = ir_display.get("moving_average_window")
+    if moving_average_metrics and moving_average_window:
+        normalized_constraints.append(
+            f"移动平均：{'、'.join(moving_average_metrics[:3])}（{moving_average_window}期）"
+        )
 
     deduped_constraints: List[str] = []
     seen_constraints: set[str] = set()

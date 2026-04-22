@@ -40,10 +40,26 @@ function splitDraftUnderstandingItems(text) {
   if (!strippedText) return []
 
   return strippedText
-    .split('；')
+    .split(/[；\n]/)
     .map(item => item.trim().replace(/^[；。]+|[；。]+$/g, ''))
     .map(normalizeSummaryItem)
     .filter(Boolean)
+}
+
+function mergeSummaryItems(...groups) {
+  const merged = []
+  const seen = new Set()
+
+  for (const group of groups) {
+    for (const rawItem of group || []) {
+      const item = normalizeSummaryItem(rawItem)
+      if (!item || seen.has(item)) continue
+      seen.add(item)
+      merged.push(item)
+    }
+  }
+
+  return merged
 }
 
 const PENDING_SESSION_NODE_META = {
@@ -104,14 +120,14 @@ export function usePendingSessionPresentation({
         pendingConfirmationView.value?.draft?.natural_language || ''
       )
       if (draftUnderstandingItems.length > 0) {
-        return draftUnderstandingItems
+        return mergeSummaryItems(draftUnderstandingItems, safeConstraints)
       }
 
       const goalSummary = safeSummary.user_goal_summary
         ? `当前理解：${safeSummary.user_goal_summary}`
         : '系统已识别到可能相关的数据表，请确认后继续。'
 
-      return [goalSummary].map(normalizeSummaryItem).filter(Boolean)
+      return mergeSummaryItems([goalSummary], safeConstraints)
     }
 
     if (pendingSessionNode.value === 'execution_guard') {
@@ -124,21 +140,21 @@ export function usePendingSessionPresentation({
       const draftUnderstandingItems = splitDraftUnderstandingItems(
         pendingConfirmationView.value?.draft?.natural_language || ''
       )
-      if (draftUnderstandingItems.length > 0) {
-        return draftUnderstandingItems
-      }
 
       const draftSummaryItems = []
       if (revisionText) {
         draftSummaryItems.push(`已吸收修改：${revisionText}`)
       }
       draftSummaryItems.push(...safeConstraints)
+      if (draftUnderstandingItems.length > 0 || draftSummaryItems.length > 0) {
+        return mergeSummaryItems(draftUnderstandingItems, draftSummaryItems)
+      }
       if (draftSummaryItems.length === 0) {
         draftSummaryItems.push(
           pendingConfirmationView.value?.draft?.natural_language || '系统已生成新的查询草稿，请确认是否继续。'
         )
       }
-      return draftSummaryItems.map(normalizeSummaryItem).filter(Boolean)
+      return mergeSummaryItems(draftSummaryItems)
     }
 
     return []

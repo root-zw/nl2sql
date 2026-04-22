@@ -52,20 +52,106 @@ def ir_to_display_dict(ir: IntermediateRepresentation, semantic_model) -> Dict[s
             return alias or resolve_field(field_id)
         return str(metric_item)
 
+    def serialize_filter_condition(condition) -> Optional[Dict[str, Any]]:
+        if not condition:
+            return None
+
+        if isinstance(condition, dict):
+            field_id = condition.get("field")
+            op = condition.get("op")
+            value = condition.get("value")
+        else:
+            field_id = getattr(condition, "field", None)
+            op = getattr(condition, "op", None)
+            value = getattr(condition, "value", None)
+
+        if not field_id and not op:
+            return None
+
+        return {
+            "field": resolve_field(field_id) if field_id else field_id,
+            "op": op,
+            "value": value,
+        }
+
+    def resolve_field_list(field_ids: Optional[List[str]]) -> List[str]:
+        return [resolve_field(field_id) for field_id in (field_ids or []) if field_id]
+
     display_filters = [{
         "field": resolve_field(flt.field),
         "op": flt.op,
         "value": flt.value
     } for flt in ir.filters]
 
+    display_conditional_metrics = []
+    for metric in getattr(ir, "conditional_metrics", []) or []:
+        field_id = metric.get("field") if isinstance(metric, dict) else getattr(metric, "field", None)
+        aggregation = metric.get("aggregation") if isinstance(metric, dict) else getattr(metric, "aggregation", None)
+        alias = metric.get("alias") if isinstance(metric, dict) else getattr(metric, "alias", None)
+        condition = metric.get("condition") if isinstance(metric, dict) else getattr(metric, "condition", None)
+        display_conditional_metrics.append({
+            "field": resolve_field(field_id) if field_id else field_id,
+            "aggregation": aggregation,
+            "alias": alias or resolve_field(field_id),
+            "condition": serialize_filter_condition(condition),
+        })
+
+    display_calculated_fields = []
+    for field in getattr(ir, "calculated_fields", []) or []:
+        alias = field.get("alias") if isinstance(field, dict) else getattr(field, "alias", None)
+        expression = field.get("expression") if isinstance(field, dict) else getattr(field, "expression", None)
+        aggregation = field.get("aggregation") if isinstance(field, dict) else getattr(field, "aggregation", None)
+        display_calculated_fields.append({
+            "alias": alias or expression or "计算字段",
+            "expression": expression,
+            "aggregation": aggregation,
+            "field_refs": resolve_field_list(
+                field.get("field_refs") if isinstance(field, dict) else getattr(field, "field_refs", None)
+            ),
+        })
+
+    display_ratio_metrics = []
+    for metric in getattr(ir, "ratio_metrics", []) or []:
+        alias = metric.get("alias") if isinstance(metric, dict) else getattr(metric, "alias", None)
+        numerator_field = metric.get("numerator_field") if isinstance(metric, dict) else getattr(metric, "numerator_field", None)
+        denominator_field = metric.get("denominator_field") if isinstance(metric, dict) else getattr(metric, "denominator_field", None)
+        numerator_condition = metric.get("numerator_condition") if isinstance(metric, dict) else getattr(metric, "numerator_condition", None)
+        denominator_condition = metric.get("denominator_condition") if isinstance(metric, dict) else getattr(metric, "denominator_condition", None)
+        as_percentage = metric.get("as_percentage") if isinstance(metric, dict) else getattr(metric, "as_percentage", True)
+        display_ratio_metrics.append({
+            "alias": alias or "占比指标",
+            "numerator_field": resolve_field(numerator_field) if numerator_field else numerator_field,
+            "denominator_field": resolve_field(denominator_field) if denominator_field else denominator_field,
+            "numerator_condition": serialize_filter_condition(numerator_condition),
+            "denominator_condition": serialize_filter_condition(denominator_condition),
+            "as_percentage": as_percentage,
+        })
+
     return {
         "query_type": ir.query_type,
         "metrics": [get_metric_display(m) for m in ir.metrics],
         "dimensions": [resolve_field(d) for d in ir.dimensions],
+        "duplicate_by": resolve_field_list(getattr(ir, "duplicate_by", [])),
+        "partition_by": resolve_field_list(getattr(ir, "partition_by", [])),
+        "window_limit": getattr(ir, "window_limit", None),
+        "comparison_type": getattr(ir, "comparison_type", None),
+        "comparison_periods": getattr(ir, "comparison_periods", 1),
+        "show_growth_rate": getattr(ir, "show_growth_rate", True),
+        "cumulative_metrics": [get_metric_display(metric) for metric in getattr(ir, "cumulative_metrics", []) or []],
+        "moving_average_window": getattr(ir, "moving_average_window", None),
+        "moving_average_metrics": [get_metric_display(metric) for metric in getattr(ir, "moving_average_metrics", []) or []],
         "time": ir.time.model_dump() if ir.time else None,
         "filters": display_filters,
         "limit": ir.limit,
         "order_by": [{"field": resolve_field(o.field), "desc": o.desc} for o in ir.order_by],
+        "sort_by": resolve_field(getattr(ir, "sort_by", None)) if getattr(ir, "sort_by", None) else None,
+        "sort_order": getattr(ir, "sort_order", "desc"),
+        "with_total": getattr(ir, "with_total", False),
+        "conditional_metrics": display_conditional_metrics,
+        "calculated_fields": display_calculated_fields,
+        "ratio_metrics": display_ratio_metrics,
+        "cross_partition_query": getattr(ir, "cross_partition_query", False),
+        "cross_partition_mode": getattr(ir, "cross_partition_mode", None),
         "original_question": ir.original_question
     }
 

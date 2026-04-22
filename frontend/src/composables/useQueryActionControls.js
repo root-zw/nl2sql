@@ -98,7 +98,7 @@ export function useQueryActionControls({
           onClick: () => approveExecution()
         }),
         buildPendingActionButton('change_table', {
-          label: '重新选表',
+          label: '不是这张表',
           className: 'btn-secondary',
           disabled: commonDisabled,
           onClick: () => requestTableReselection(),
@@ -136,7 +136,7 @@ export function useQueryActionControls({
           visible: canUsePendingAction('revise')
         }),
         buildPendingActionButton('change_table', {
-          label: '重新选表',
+          label: '不是这张表',
           className: 'btn-secondary',
           disabled: commonDisabled,
           onClick: () => requestTableReselection(),
