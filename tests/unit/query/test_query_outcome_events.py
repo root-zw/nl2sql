@@ -6,8 +6,10 @@ from server.api.query.routes import (
     _build_query_outcome_event_key,
     _emit_query_outcome_event,
     _map_query_outcome_event_type,
+    _should_generate_result_narrative,
     _should_emit_completed_event,
 )
+from server.models.api import QueryRequest, QueryResult
 
 
 def test_map_query_outcome_event_type_returns_expected_event_names():
@@ -31,6 +33,27 @@ def test_should_emit_completed_event_skips_pending_user_action_payloads():
     assert _should_emit_completed_event({"status": "awaiting_user_action"}, query_cancelled=False) is False
     assert _should_emit_completed_event(None, query_cancelled=False) is True
     assert _should_emit_completed_event({"status": "success"}, query_cancelled=True) is False
+
+
+def test_should_generate_result_narrative_allows_empty_result_rows(monkeypatch):
+    monkeypatch.setattr("server.api.query.routes.settings.narrative_enabled", True)
+
+    request = QueryRequest(text="空结果也要给建议", user_id="u1")
+    result = QueryResult(columns=[{"name": "成交年份", "type": "int"}], rows=[], meta={"sql": "select 1 where 1 = 0"})
+
+    assert _should_generate_result_narrative(result, request) is True
+
+
+def test_should_generate_result_narrative_skips_explain_only_and_disabled_requests(monkeypatch):
+    monkeypatch.setattr("server.api.query.routes.settings.narrative_enabled", True)
+
+    explain_only_request = QueryRequest(text="只看SQL", user_id="u1", explain_only=True)
+    disabled_request = QueryRequest(text="关闭叙述", user_id="u1", disable_narrative=True)
+    explain_only_result = QueryResult(columns=[{"name": "sql", "type": "string"}], rows=[], meta={"explain_only": True})
+    normal_result = QueryResult(columns=[{"name": "成交年份", "type": "int"}], rows=[], meta={"sql": "select 1 where 1 = 0"})
+
+    assert _should_generate_result_narrative(explain_only_result, explain_only_request) is False
+    assert _should_generate_result_narrative(normal_result, disabled_request) is False
 
 
 @pytest.mark.asyncio

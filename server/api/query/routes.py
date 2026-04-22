@@ -257,6 +257,19 @@ def _should_emit_completed_event(
     return str(response_payload.get("status") or "").strip() not in PENDING_STREAM_RESPONSE_STATUSES
 
 
+def _should_generate_result_narrative(
+    result: Optional[QueryResult],
+    request: QueryRequest,
+) -> bool:
+    if result is None or not settings.narrative_enabled:
+        return False
+    if getattr(request, "disable_narrative", False):
+        return False
+    if getattr(request, "explain_only", False):
+        return False
+    return not bool((result.meta or {}).get("explain_only"))
+
+
 async def _emit_query_outcome_event(
     *,
     query_id: str,
@@ -4294,11 +4307,7 @@ async def query(
         # 10. 生成自然语言叙述：仅同步等待（可配置超时），失败即放弃，不进行异步
         # 注意：调用方可以通过 request.disable_narrative 显式关闭该步骤（例如 Dify 工具调用场景）
         try:
-            if (
-                result.rows
-                and settings.narrative_enabled
-                and not getattr(request, "disable_narrative", False)
-            ):
+            if _should_generate_result_narrative(result, request):
                 narrative_step_name = "生成叙述"
                 narrative_step_desc = "生成自然语言叙述"
                 step = tracer.start_step(narrative_step_name, "narrative", narrative_step_desc)
