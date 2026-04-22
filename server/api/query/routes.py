@@ -39,7 +39,7 @@ from server.formatter.result_formatter import (
     format_detail_rows,
 )
 from server.explain.explainer import build_process_explanation, build_insights
-from server.explain.narrative import generate_narrative, stream_narrative
+from server.explain.narrative import build_empty_result_guidance, generate_narrative, stream_narrative
 from server.dependencies import get_llm_client, get_narrative_llm_client
 from server.config import settings, RetrievalConfig, get_retrieval_param
 from server.trace import create_tracer, get_or_resume_tracer  # 查询追踪
@@ -4405,6 +4405,10 @@ async def query(
                     if permission_context:
                         facts["permission_context"] = permission_context
                         facts["data_scope_note"] = "注意：返回数据仅包含当前用户有权访问的范围"
+
+                empty_result_guidance = build_empty_result_guidance(facts)
+                if empty_result_guidance:
+                    facts["empty_result_guidance"] = empty_result_guidance
 
                 context_highlights = []
                 context_summaries = []

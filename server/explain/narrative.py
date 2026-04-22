@@ -20,6 +20,83 @@ from server.utils.prompt_loader import resolve_path
 logger = structlog.get_logger()
 
 
+def _format_empty_result_filter(item: Dict[str, Any]) -> Optional[str]:
+    """将结构化筛选条件压缩为便于叙述模型理解的短句。"""
+    if not item:
+        return None
+
+    field = item.get("field") or item.get("field_id")
+    operator = item.get("operator") or item.get("op")
+    if not field or not operator:
+        return None
+
+    if operator in {"IN", "NOT IN"}:
+        value_count = item.get("value_count")
+        preview_values = item.get("value_preview") or item.get("all_values") or item.get("value")
+        if isinstance(preview_values, list):
+            preview = "、".join(str(v) for v in preview_values[:3])
+        elif preview_values is None:
+            preview = ""
+        else:
+            preview = str(preview_values)
+
+        if value_count and preview:
+            return f"{field} {operator} {preview}等{value_count}项"
+        if value_count:
+            return f"{field} {operator} 共{value_count}项"
+        if preview:
+            return f"{field} {operator} {preview}"
+        return f"{field} {operator}"
+
+    value = item.get("value")
+    if value is None:
+        return f"{field} {operator}"
+    return f"{field} {operator} {value}"
+
+
+def build_empty_result_guidance(facts: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """为 0 行结果构造额外上下文，帮助叙述模型给出更具体的调整建议。"""
+    row_count = facts.get("row_count")
+    try:
+        if int(row_count) != 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+
+    guidance: Dict[str, Any] = {
+        "query_state": "executed_but_no_rows",
+        "advice_goal": "结合原问题和当前查询条件，说明当前为什么没有命中数据，并给出更可能查出结果的调整建议。",
+        "focus_points": [
+            "优先判断哪些筛选范围可能过严",
+            "建议必须贴合当前问题和当前条件，不能只给泛泛提示",
+            "如果存在权限范围限制，需要提醒结果仅基于当前可访问范围"
+        ],
+    }
+
+    filter_scope = facts.get("filter_scope") or []
+    active_filters = [
+        summary
+        for summary in (_format_empty_result_filter(item) for item in filter_scope)
+        if summary
+    ]
+    if active_filters:
+        guidance["active_filters"] = active_filters
+
+    permission_context = facts.get("permission_context") or []
+    if permission_context:
+        guidance["permission_limits"] = permission_context
+
+    table_name = facts.get("table_name")
+    if table_name:
+        guidance["current_table"] = table_name
+
+    selected_tables = facts.get("selected_tables") or []
+    if selected_tables:
+        guidance["selected_tables"] = selected_tables
+
+    return guidance
+
+
 def _load_prompt() -> str:
     """加载提示词模板。若找不到文件，使用配置的默认模板。"""
     default_path = Path(__file__).resolve().parents[2] / "prompts" / "narrative" / "prompt.txt"
