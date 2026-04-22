@@ -2256,7 +2256,7 @@ class ASTBuilder:
         # 2. 时间条件
         if ir.time:
             # 始终添加时间过滤条件，确保数据准确性
-            time_cond = self._build_time_condition(ir.time, main_table, ir.dimensions)
+            time_cond = self._build_time_condition(ir.time, main_table)
             if time_cond:
                 conditions.append(time_cond)
                 logger.debug(f"添加时间过滤条件: {time_cond.sql()}")
@@ -2586,53 +2586,19 @@ class ASTBuilder:
         self,
         time_range: TimeRange,
         main_table: str,
-        dimensions: List[str] = None
     ) -> Optional[exp.Expression]:
-        """构建时间条件（智能判断使用哪个字段）
-
-        支持两种场景：
-        1. 年份在字段中：如"成交年份"字段（整数类型如 2020、2021）
-        2. 年份在日期字段中：使用表配置的 time_field（日期类型）
+        """构建时间条件（基于数据源 time_field）
 
         Args:
             time_range: 时间范围配置
             main_table: 主表ID
-            dimensions: 当前查询的维度字段ID列表（用于识别年份字段）
         """
         source = self.model.sources.get(main_table)
-
-        # 优先处理：当 time.unit == 'year' 且 dimensions 中有年份字段时
-        # 使用年份字段进行整数过滤
-        if time_range.type == "relative" and time_range.unit == "year" and dimensions:
-            year_field_info = self._find_year_field_in_dimensions(dimensions, main_table)
-            if year_field_info:
-                field_column, field_table = year_field_info
-                now = now_with_tz()
-                # 计算起始年份：当前年份 - (last_n - 1)
-                # 例如：近6年 = 2020-2025（包含2020和2025）
-                start_year = now.year - time_range.last_n + 1
-                end_year = now.year
-
-                logger.debug(f"使用年份字段过滤: {field_column} >= {start_year} AND <= {end_year}")
-
-                year_field_expr = exp.column(field_column, table=self._get_table_alias(field_table))
-
-                # 生成 年份字段 >= start_year AND 年份字段 <= end_year
-                return exp.And(
-                    this=exp.GTE(
-                        this=year_field_expr,
-                        expression=exp.Literal.number(start_year)
-                    ),
-                    expression=exp.LTE(
-                        this=year_field_expr,
-                        expression=exp.Literal.number(end_year)
-                    )
-                )
 
         # 回退到日期类型的 time_field
         time_field_name = getattr(source, 'time_field', None) if source else None
         if not source or not time_field_name:
-            logger.warning(f"表 {main_table} 没有配置时间字段，且未找到年份维度字段")
+            logger.warning(f"表 {main_table} 没有配置时间字段")
             return None
 
         time_field = exp.column(time_field_name, table=self._get_table_alias(main_table))
@@ -2781,76 +2747,6 @@ class ASTBuilder:
             )
 
         return None
-
-    def _find_year_field_in_dimensions(
-        self,
-        dimensions: List[str],
-        main_table: str
-    ) -> Optional[tuple]:
-        """在 dimensions 中查找年份类型的字段
-
-        识别年份字段的方式：
-        1. 字段名称包含年份相关关键词（"年份"、"年度"等）
-        2. 字段的 dimension_type 是 'temporal'
-        3. 字段的数据类型是整数且名称包含"年"
-
-        Args:
-            dimensions: 维度字段ID列表
-            main_table: 主表ID
-
-        Returns:
-            (物理列名, 表ID) 或 None
-        """
-        # 年份相关关键词
-        year_keywords = {'年份', '年度', '成交年份', '数据年份', '统计年份', '报告年份'}
-        # 更宽松的匹配：只包含"年"但要排除一些干扰词
-        year_suffix_keywords = {'年'}
-        exclude_keywords = {'年限', '年龄', '年级', '年代', '年月', '年月日'}
-
-        for dim_id in dimensions:
-            field = self.model.fields.get(dim_id)
-            if not field:
-                continue
-
-            # 确保字段属于主表
-            if field.datasource_id != main_table:
-                continue
-
-            display_name = field.display_name or ''
-            field_name = field.field_name or ''
-
-            # 检查是否是年份字段
-            is_year_field = False
-
-            # 1. 精确匹配年份关键词
-            if display_name in year_keywords or field_name in year_keywords:
-                is_year_field = True
-
-            # 2. 包含"年份"或"年度"
-            elif '年份' in display_name or '年度' in display_name:
-                is_year_field = True
-
-            # 3. 字段名以"年"结尾，但不是排除的词
-            elif display_name.endswith('年') and not any(ex in display_name for ex in exclude_keywords):
-                # 进一步检查数据类型（应该是整数或字符串表示的年份）
-                if field.data_type and field.data_type.lower() in ('int', 'integer', 'smallint', 'bigint', 'numeric', 'decimal', 'nvarchar', 'varchar'):
-                    is_year_field = True
-
-            # 4. 检查 dimension_type 是否是 temporal
-            dim_props = getattr(field, 'dimension_props', None)
-            if dim_props and getattr(dim_props, 'dimension_type', None) == 'temporal':
-                # 进一步确认是年份级别的时间维度
-                if '年' in display_name:
-                    is_year_field = True
-
-            if is_year_field:
-                # 获取物理列名
-                physical_column = getattr(field, 'physical_column_name', None) or getattr(field, 'column', None) or field.field_name
-                logger.debug(f"找到年份字段: {display_name} -> {physical_column}")
-                return (physical_column, field.datasource_id)
-
-        return None
-
     def _is_spatial_type(self, data_type: str) -> bool:
         """检查是否为空间数据类型"""
         if not data_type:
@@ -7234,4 +7130,3 @@ class ASTBuilder:
             return exp.Literal.string(value)
         else:
             return exp.Literal.string(str(value))
-
