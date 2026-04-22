@@ -1161,36 +1161,78 @@ class IRValidator:
         """
         判断字段是否可能是年份相关字段
 
-        使用更宽松的判断标准：
-        1. 字段名包含年份相关关键词
-        2. 字段类型是时间戳或日期
-        3. 字段有年份相关的枚举值
+        兼容运行时 UUID 字段场景，综合字段元数据判断：
+        1. 字段/展示名包含明确的时间关键词（如“年份”“日期”“季度”）
+        2. 字段自身被建模为 timestamp / temporal
+        3. 字段存在典型年份枚举值
         """
-        # 年份相关关键词
-        year_keywords = [
-            'year', '年份', '年度', 'nian', 'nf',  # 年份
-            'time', '时间', 'date', '日期',       # 时间
-            'deal', '成交', 'transaction',       # 成交相关
-            'create', '创建', 'created',         # 创建相关
-            'update', '更新', 'updated'          # 更新相关
-        ]
+        strong_time_keywords = (
+            "年份",
+            "年度",
+            "年月",
+            "年",
+            "日期",
+            "时间",
+            "季度",
+            "月份",
+            "month",
+            "quarter",
+            "week",
+            "date",
+            "time",
+            "year",
+        )
+        negative_keywords = ("年限", "年龄", "周年")
 
-        # 检查字段名
-        field_lower = field_id.lower()
-        if any(keyword in field_lower for keyword in year_keywords):
+        def _normalize_text(value: Any) -> str:
+            return re.sub(r"\s+", "", str(value or "")).lower()
+
+        def _looks_like_temporal_name(value: Any) -> bool:
+            text = _normalize_text(value)
+            if not text or any(keyword in text for keyword in negative_keywords):
+                return False
+            if "年份" in text or "年度" in text or "年月" in text:
+                return True
+            if any(keyword in text for keyword in strong_time_keywords if keyword != "年"):
+                return True
+            return text.endswith("年")
+
+        if _looks_like_temporal_name(field_id):
             return True
 
-        # 检查字段类型（如果有字段定义）
-        if hasattr(self.semantic_model, 'fields') and field_id in self.semantic_model.fields:
-            field_obj = self.semantic_model.fields[field_id]
-            field_category = getattr(field_obj, 'field_category', '')
-            if field_category in ['timestamp', 'date', 'datetime']:
+        field_obj = None
+        if hasattr(self.semantic_model, "fields"):
+            field_obj = self.semantic_model.fields.get(field_id)
+
+        # 检查字段类型与元数据
+        if field_obj is not None:
+            metadata_texts = [
+                getattr(field_obj, "display_name", None),
+                getattr(field_obj, "field_name", None),
+                getattr(field_obj, "physical_column_name", None),
+                getattr(field_obj, "description", None),
+            ]
+            metadata_texts.extend(getattr(field_obj, "synonyms", None) or [])
+            if any(_looks_like_temporal_name(text) for text in metadata_texts):
                 return True
 
-        # 检查维度类型（如果是维度）
+            field_category = str(getattr(field_obj, "field_category", "") or "").lower()
+            data_type = str(getattr(field_obj, "data_type", "") or "").lower()
+            if field_category == "timestamp" or data_type in {"date", "datetime", "timestamp", "timestamptz"}:
+                return True
+
+            timestamp_props = getattr(field_obj, "timestamp_props", None)
+            if timestamp_props and getattr(timestamp_props, "time_granularity", None):
+                return True
+
+            dimension_props = getattr(field_obj, "dimension_props", None)
+            if str(getattr(dimension_props, "dimension_type", "") or "").lower() == "temporal":
+                return True
+
+        # 检查维度类型（如果是旧模型 dimensions 映射）
         if hasattr(self.semantic_model, 'dimensions') and field_id in self.semantic_model.dimensions:
             dim_obj = self.semantic_model.dimensions[field_id]
-            dim_type = getattr(dim_obj, 'dimension_type', '')
+            dim_type = str(getattr(dim_obj, 'dimension_type', '') or '').lower()
             if dim_type == 'temporal':
                 return True
 
