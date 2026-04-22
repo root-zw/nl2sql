@@ -131,6 +131,7 @@ def test_chat_view_uses_result_action_contract_for_result_stage_actions():
     assert "function getVisibleRunningSessionActions" in content
     assert "function hasVisibleRunningSessionActions" in content
     assert "function hasConfirmedDraftSnapshot(snapshot)" in content
+    assert "if (msg?.sql_text || msg?.result_data || msg?.result_summary) return null" in content
     assert "if (!snapshot || snapshot.status !== 'running' || hasConfirmedDraftSnapshot(snapshot)) return null" in content
     assert "class=\"running-session-panel\"" in content
 
@@ -296,13 +297,29 @@ def test_chat_view_shows_result_details_before_narrative_finishes():
     chat_view = ROOT_DIR / "frontend" / "src" / "views" / "Chat.vue"
     content = chat_view.read_text(encoding="utf-8")
 
-    assert "v-else-if=\"isNarrativeStreaming(msg)\"" in content
+    assert "v-else-if=\"isNarrativePendingForMessage(msg)\"" in content
+    assert "function isNarrativePendingForMessage(msg)" in content
+    assert "function hasExecutionResult(msg)" in content
+    assert "function isThinkingActivelyRunning(msg)" in content
+    assert "function getThinkingIcon(msg)" in content
+    assert "function getThinkingTitle(msg)" in content
     assert "if (msg.result_data?.meta?.explain_only) return true" in content
-    assert "if (currentStreamingMessageId.value === msg.message_id && narrativePending.value) {" in content
+    assert "if (isNarrativePendingForMessage(msg)) {" in content
     assert "return Boolean(msg?.result_summary)" in content
-    assert "msg?.sql_text ||" not in content
+    assert "if (msg.result_data || msg.sql_text) return true" not in content
     assert "msg?.result_data?.columns?.length ||" not in content
     assert "msg?.result_data?.rows?.length ||" not in content
+    assert "!hasExecutionResult(msg) &&" in content
+
+
+def test_chat_view_uses_sticky_scroll_instead_of_forcing_stream_updates_to_bottom():
+    chat_view = ROOT_DIR / "frontend" / "src" / "views" / "Chat.vue"
+    content = chat_view.read_text(encoding="utf-8")
+
+    assert "const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96" in content
+    assert "function isMessagesContainerNearBottom(threshold = AUTO_SCROLL_BOTTOM_THRESHOLD_PX)" in content
+    assert "const shouldStickToBottom = force || isMessagesContainerNearBottom()" in content
+    assert content.count("scrollToBottom({ force: true })") >= 4
 
 
 def test_chat_view_only_shows_empty_result_fallback_without_narrative_summary():
