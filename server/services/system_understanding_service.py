@@ -12,13 +12,47 @@ import structlog
 from sqlglot import exp, parse_one
 
 from server.api.query.confirmation_utils import (
-    build_draft_confirmation_summary,
+    describe_time_range,
     get_revision_text,
 )
 from server.models.api import UnderstandingItem
 from server.utils.field_display import get_field_display_name
 
 logger = structlog.get_logger()
+
+STRUCTURED_UNDERSTANDING_PREFIXES = (
+    "当前数据表：",
+    "当前涉及数据表：",
+    "统计指标：",
+    "占比指标：",
+    "条件指标：",
+    "计算字段：",
+    "分析维度：",
+    "分析方式：",
+    "时间范围：",
+    "累计指标：",
+    "移动平均：",
+)
+
+TEMPLATED_UNDERSTANDING_PREFIXES = (
+    "我要基于【",
+    "统计【",
+    "按【",
+    "计算占比指标【",
+    "补充条件指标【",
+    "计算字段【",
+    "筛选条件为",
+    "时间范围为【",
+    "分析方式为【",
+    "排序方式为",
+    "结果条数限制为",
+    "结果会附带合计行",
+    "查询方式为【",
+    "返回明细字段【",
+    "返回明细记录",
+    "识别按【",
+    "识别重复记录",
+)
 
 
 def _normalize_text(text: Any) -> str:
@@ -87,6 +121,285 @@ def _split_summary_to_items(summary: str) -> List[UnderstandingItem]:
         [{"text": part.strip()} for part in stripped.split("；") if part.strip()],
         default_source="system",
     )
+
+
+def _extract_named_items(items: Optional[List[Dict[str, Any]]], key: str = "alias") -> List[str]:
+    names: List[str] = []
+    seen: set[str] = set()
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get(key) or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        names.append(value)
+    return names
+
+
+def _normalize_name_list(items: Optional[List[Any]]) -> List[str]:
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for item in items or []:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _looks_like_structured_understanding_text(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    if any(normalized.startswith(prefix) for prefix in STRUCTURED_UNDERSTANDING_PREFIXES):
+        return True
+    if any(normalized.startswith(prefix) for prefix in TEMPLATED_UNDERSTANDING_PREFIXES):
+        return True
+    if "【" in normalized and "】" in normalized:
+        for token in ("统计", "筛选条件", "分析方式", "时间范围", "排序方式", "查询方式", "占比指标", "条件指标"):
+            if token in normalized:
+                return True
+    return False
+
+
+def _render_ir_filter_text(condition: Dict[str, Any]) -> str:
+    if not isinstance(condition, dict):
+        return ""
+    field_display = str(condition.get("field") or "").strip()
+    operator = str(condition.get("op") or "").strip()
+    value = condition.get("value")
+    if not field_display or not operator:
+        return ""
+    return _resolve_filter_condition_text(field_display, operator, value)
+
+
+def _join_preview(items: List[str], *, max_items: int = 3) -> str:
+    normalized = [str(item).strip() for item in items if str(item).strip()]
+    if not normalized:
+        return ""
+    preview = "、".join(normalized[:max_items])
+    if len(normalized) > max_items:
+        preview = f"{preview} 等{len(normalized)}项"
+    return preview
+
+
+def _build_natural_fallback_items(
+    *,
+    ir_display: Dict[str, Any],
+    selected_table_names: Optional[List[str]] = None,
+) -> List[UnderstandingItem]:
+    query_type = str(ir_display.get("query_type") or "aggregation")
+    table_names = _normalize_name_list(selected_table_names)
+    metrics = _normalize_name_list(ir_display.get("metrics") or [])
+    dimensions = _normalize_name_list(ir_display.get("dimensions") or [])
+    duplicate_by = _normalize_name_list(ir_display.get("duplicate_by") or [])
+    partition_by = _normalize_name_list(ir_display.get("partition_by") or [])
+    ratio_metric_names = _extract_named_items(ir_display.get("ratio_metrics"))
+    conditional_metric_names = _extract_named_items(ir_display.get("conditional_metrics"))
+    calculated_field_names = _extract_named_items(ir_display.get("calculated_fields"))
+    cumulative_metrics = _normalize_name_list(ir_display.get("cumulative_metrics") or [])
+    moving_average_metrics = _normalize_name_list(ir_display.get("moving_average_metrics") or [])
+    moving_average_window = ir_display.get("moving_average_window")
+    comparison_text = str(ir_display.get("comparison_type") or "").strip()
+    show_growth_rate = bool(ir_display.get("show_growth_rate"))
+    limit = ir_display.get("limit")
+    time_text = describe_time_range(ir_display.get("time"))
+    filter_texts = [
+        rendered
+        for rendered in (_render_ir_filter_text(condition) for condition in (ir_display.get("filters") or []))
+        if rendered
+    ]
+
+    comparison_label_map = {
+        "yoy": "同比",
+        "mom": "环比",
+        "qoq": "季度环比",
+        "wow": "周环比",
+    }
+    comparison_label = comparison_label_map.get(comparison_text, "")
+
+    bullets: List[UnderstandingItem] = []
+
+    if table_names:
+        table_preview = _join_preview(table_names)
+        if len(table_names) == 1:
+            bullets.append(
+                UnderstandingItem(
+                    text=f"我会基于{table_preview}这张表来查询。",
+                    anchors=["table"],
+                    source="system",
+                    material=True,
+                )
+            )
+        else:
+            bullets.append(
+                UnderstandingItem(
+                    text=f"我会基于{table_preview}这些表来完成这次查询。",
+                    anchors=["table"],
+                    source="system",
+                    material=True,
+                )
+            )
+
+    if query_type == "duplicate_detection":
+        duplicate_preview = _join_preview(duplicate_by)
+        if duplicate_preview:
+            bullets.append(
+                UnderstandingItem(
+                    text=f"我会按{duplicate_preview}来识别重复记录。",
+                    anchors=["duplicate_by"],
+                    source="system",
+                    material=True,
+                )
+            )
+    elif query_type == "window_detail":
+        partition_preview = _join_preview(partition_by)
+        dimension_preview = _join_preview(dimensions)
+        window_limit = ir_display.get("window_limit")
+        if partition_preview and window_limit:
+            bullets.append(
+                UnderstandingItem(
+                    text=f"结果会按{partition_preview}分组，并在每组里取前{window_limit}条明细。",
+                    anchors=["partition_by", "window_limit"],
+                    source="system",
+                    material=True,
+                )
+            )
+        elif dimension_preview:
+            bullets.append(
+                UnderstandingItem(
+                    text=f"结果会返回{dimension_preview}相关的明细记录。",
+                    anchors=["dimensions"],
+                    source="system",
+                    material=True,
+                )
+            )
+    elif query_type == "detail":
+        dimension_preview = _join_preview(dimensions)
+        if dimension_preview:
+            bullets.append(
+                UnderstandingItem(
+                    text=f"结果会返回{dimension_preview}这些字段对应的明细记录。",
+                    anchors=["dimensions"],
+                    source="system",
+                    material=True,
+                )
+            )
+        else:
+            bullets.append(
+                UnderstandingItem(
+                    text="这次会直接返回符合条件的明细记录。",
+                    anchors=["query_type"],
+                    source="system",
+                    material=True,
+                )
+            )
+    else:
+        metric_preview = _join_preview(metrics)
+        dimension_preview = _join_preview(dimensions)
+        if metric_preview and dimension_preview:
+            bullets.append(
+                UnderstandingItem(
+                    text=f"结果会按{dimension_preview}展开，统计{metric_preview}。",
+                    anchors=["dimensions", "metrics"],
+                    source="system",
+                    material=True,
+                )
+            )
+        elif metric_preview:
+            bullets.append(
+                UnderstandingItem(
+                    text=f"我会先统计{metric_preview}。",
+                    anchors=["metrics"],
+                    source="system",
+                    material=True,
+                )
+            )
+        elif dimension_preview:
+            bullets.append(
+                UnderstandingItem(
+                    text=f"结果会围绕{dimension_preview}来展示。",
+                    anchors=["dimensions"],
+                    source="system",
+                    material=True,
+                )
+            )
+
+    extra_metric_parts: List[str] = []
+    ratio_preview = _join_preview(ratio_metric_names)
+    conditional_preview = _join_preview(conditional_metric_names)
+    calculated_preview = _join_preview(calculated_field_names)
+    if ratio_preview:
+        extra_metric_parts.append(f"计算{ratio_preview}")
+    if conditional_preview:
+        extra_metric_parts.append(f"补充{conditional_preview}这类条件指标")
+    if calculated_preview:
+        extra_metric_parts.append(f"补充{calculated_preview}这类计算字段")
+    if extra_metric_parts:
+        bullets.append(
+            UnderstandingItem(
+                text=f"同时会{'，并'.join(extra_metric_parts)}。",
+                anchors=["ratio_metrics", "conditional_metrics", "calculated_fields"],
+                source="system",
+                material=True,
+            )
+        )
+
+    if time_text and filter_texts:
+        bullets.append(
+            UnderstandingItem(
+                text=f"筛选范围会限制在{time_text}，并且只看{'、'.join(filter_texts)}的记录。",
+                anchors=["time", "filters"],
+                source="system",
+                material=True,
+            )
+        )
+    elif time_text:
+        bullets.append(
+            UnderstandingItem(
+                text=f"筛选范围会限制在{time_text}。",
+                anchors=["time"],
+                source="system",
+                material=True,
+            )
+        )
+    elif filter_texts:
+        bullets.append(
+            UnderstandingItem(
+                text=f"筛选范围会限制为{'、'.join(filter_texts)}。",
+                anchors=["filters"],
+                source="system",
+                material=True,
+            )
+        )
+
+    analysis_parts: List[str] = []
+    if comparison_label:
+        base_analysis = f"结果会做{comparison_label}分析"
+        if show_growth_rate:
+            base_analysis += "并显示增长率"
+        analysis_parts.append(base_analysis)
+    elif show_growth_rate:
+        analysis_parts.append("结果会显示增长率")
+    if cumulative_metrics:
+        analysis_parts.append(f"同时补充{_join_preview(cumulative_metrics)}的累计值")
+    if moving_average_metrics and moving_average_window:
+        analysis_parts.append(f"并计算{_join_preview(moving_average_metrics)}的{moving_average_window}期移动平均")
+    if limit:
+        analysis_parts.append(f"结果最多返回{limit}条")
+    if analysis_parts:
+        bullets.append(
+            UnderstandingItem(
+                text="，".join(analysis_parts) + "。",
+                anchors=["comparison", "cumulative_metrics", "moving_average_metrics", "limit"],
+                source="system",
+                material=True,
+            )
+        )
+
+    return normalize_understanding_items(bullets, default_source="system")
 
 
 def _get_selected_table_scope(
@@ -446,16 +759,25 @@ def build_system_understanding(
     permission_scope_items: Optional[List[str]] = None,
 ) -> List[UnderstandingItem]:
     model_items = normalize_understanding_items(model_understanding, default_source="model")
+    natural_model_items = [
+        item
+        for item in model_items
+        if not _looks_like_structured_understanding_text(item.text)
+    ]
 
-    if model_items:
-        base_items = model_items
+    if natural_model_items and (len(natural_model_items) >= 2 or len(natural_model_items) == len(model_items)):
+        base_items = natural_model_items
     else:
-        fallback_summary = build_draft_confirmation_summary(
-            ir_display,
+        if model_items:
+            logger.info(
+                "系统理解命中结构化模板输出，已回退到自然语言 fallback",
+                raw_count=len(model_items),
+                kept_count=len(natural_model_items),
+            )
+        base_items = _build_natural_fallback_items(
+            ir_display=ir_display,
             selected_table_names=selected_table_names,
-            revision_request=revision_request,
         )
-        base_items = _split_summary_to_items(fallback_summary)
 
     revision_text = get_revision_text(revision_request)
     merged_items: List[UnderstandingItem] = []

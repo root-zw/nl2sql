@@ -71,6 +71,7 @@ def _get_default_system_prompt() -> str:
 3. 明确表达不确定性：如果有多种理解方式，请在 ambiguities 字段中说明。
 4. 保持简洁：不要过度解读，用户问什么就转换什么。
 5. 同时输出 4-7 条理解 bullets，使用自然语言说明系统准备如何查询，避免使用“当前数据表/统计指标/分析维度”这类标签话术。
+6. 禁止输出“我要基于【...】进行查询”“当前数据表：...”“统计指标：...”这类模板化槽位复述。
 
 请严格调用 produce_ir 函数生成查询指令。"""
 
@@ -121,7 +122,7 @@ def _get_default_function_schema() -> Dict[str, Any]:
                     },
                     "understanding": {
                         "type": "object",
-                        "description": "给用户确认用的系统理解 bullets，必须与本次 IR 保持一致",
+                        "description": "给用户确认用的系统理解 bullets，必须与本次 IR 保持一致，且必须是自然语言，不要输出“当前数据表：...”或“我要基于【...】进行查询”这类模板句",
                         "properties": {
                             "bullets": {
                                 "type": "array",

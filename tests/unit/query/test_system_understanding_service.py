@@ -47,6 +47,23 @@ def _build_semantic_model():
     )
 
 
+def _build_ratio_trend_ir_display():
+    return {
+        "query_type": "aggregation",
+        "metrics": ["出让面积（平方米）"],
+        "dimensions": ["成交年份"],
+        "ratio_metrics": [{"alias": "工业用地面积占比"}],
+        "conditional_metrics": [{"alias": "工业用地面积(平方米)"}],
+        "filters": [
+            {"field": "成交年份", "op": ">=", "value": 2016},
+            {"field": "成交年份", "op": "<=", "value": 2025},
+            {"field": "出让方式", "op": "LIKE", "value": "%招拍挂%"},
+        ],
+        "comparison_type": "yoy",
+        "show_growth_rate": True,
+    }
+
+
 def test_preview_default_filter_items_includes_actual_dynamic_scope_sources():
     semantic_model = _build_semantic_model()
     ir = IntermediateRepresentation(
@@ -159,4 +176,63 @@ def test_build_system_understanding_omits_scope_lines_when_none_exist():
     texts = [item.text for item in items]
     assert all("系统默认" not in text for text in texts)
     assert all("权限访问" not in text for text in texts)
+    assert all("当前数据表：" not in text for text in texts)
+    assert all("我要基于【" not in text for text in texts)
 
+
+def test_build_system_understanding_filters_structured_template_bullets_for_ratio_trend_query():
+    items = build_system_understanding(
+        ir_display=_build_ratio_trend_ir_display(),
+        selected_table_names=["公开成交"],
+        model_understanding=[
+            {"text": "我要基于【公开成交】进行查询"},
+            {"text": "统计【出让面积（平方米）】"},
+            {"text": "按【成交年份】展开"},
+            {"text": "计算占比指标【工业用地面积占比】"},
+            {"text": "补充条件指标【工业用地面积(平方米)】"},
+            {"text": "筛选条件为 【成交年份】>=2016、【成交年份】<=2025、【出让方式】LIKE%招拍挂%"},
+            {"text": "分析方式为【同比】，并显示增长率"},
+            {"text": "当前数据表：公开成交"},
+            {"text": "统计指标：出让面积（平方米）"},
+            {"text": "占比指标：工业用地面积占比"},
+            {"text": "条件指标：工业用地面积(平方米)"},
+            {"text": "分析维度：成交年份"},
+            {"text": "分析方式：同比 + 增长率"},
+        ],
+        default_filter_items=[],
+        permission_scope_items=[],
+    )
+
+    texts = [item.text for item in items]
+
+    assert any("公开成交这张表" in text for text in texts)
+    assert any("按成交年份展开，统计出让面积（平方米）" in text for text in texts)
+    assert any("工业用地面积占比" in text for text in texts)
+    assert any("出让方式包含“招拍挂”" in text for text in texts)
+    assert any("同比分析并显示增长率" in text for text in texts)
+    assert all("当前数据表：" not in text for text in texts)
+    assert all("统计指标：" not in text for text in texts)
+    assert all("我要基于【" not in text for text in texts)
+    assert all("分析方式：" not in text for text in texts)
+
+
+def test_build_system_understanding_keeps_natural_model_bullets_and_drops_structured_tail():
+    items = build_system_understanding(
+        ir_display=_build_ratio_trend_ir_display(),
+        selected_table_names=["公开成交"],
+        model_understanding=[
+            {"text": "我会先在公开成交里统计近10年的出让面积，并按成交年份展开。"},
+            {"text": "结果会计算工业用地面积占比，并按同比展示增长率。"},
+            {"text": "当前数据表：公开成交"},
+            {"text": "统计指标：出让面积（平方米）"},
+        ],
+        default_filter_items=[],
+        permission_scope_items=[],
+    )
+
+    texts = [item.text for item in items]
+
+    assert texts == [
+        "我会先在公开成交里统计近10年的出让面积，并按成交年份展开。",
+        "结果会计算工业用地面积占比，并按同比展示增长率。",
+    ]
