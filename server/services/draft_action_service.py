@@ -26,21 +26,25 @@ logger = structlog.get_logger()
 ALLOWED_ACTIONS = {
     "question_intake": {
         "change_table",
+        "revise",
         "request_explanation",
         "exit_current",
     },
     "draft_generation": {
         "change_table",
+        "revise",
         "request_explanation",
         "exit_current",
     },
     "connection_resolution": {
         "change_table",
+        "revise",
         "request_explanation",
         "exit_current",
     },
     "permission_resolution": {
         "change_table",
+        "revise",
         "request_explanation",
         "exit_current",
     },
@@ -84,6 +88,7 @@ ALLOWED_ACTIONS = {
     },
     "table_resolved": {
         "change_table",
+        "revise",
         "request_explanation",
         "exit_current",
     },
@@ -112,7 +117,7 @@ LEGACY_CONFIRMATION_STATE_KEYS = [
     "draft_confirmation_approved",
 ]
 
-RUNNING_RESULT_PENDING_ACTIONS = ["change_table", "request_explanation", "exit_current"]
+RUNNING_RESULT_PENDING_ACTIONS = ["change_table", "revise", "request_explanation", "exit_current"]
 
 
 class DraftActionService:

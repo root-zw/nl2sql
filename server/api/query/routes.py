@@ -75,7 +75,7 @@ _query_id_ctx: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("q
 # 结果态当前只下发有明确产品语义的动作。
 # `exit_current` 在现有结果后追问路由里不会影响后续上下文继承，因此暂不暴露到结果态契约。
 RESULT_SESSION_PENDING_ACTIONS = ["change_table", "revise", "request_explanation"]
-RUNNING_QUERY_PENDING_ACTIONS = ["change_table", "request_explanation", "exit_current"]
+RUNNING_QUERY_PENDING_ACTIONS = ["change_table", "revise", "request_explanation", "exit_current"]
 PENDING_QUERY_SESSION_NODES = {"table_resolution", "execution_guard", "draft_confirmation"}
 PENDING_STREAM_RESPONSE_STATUSES = {"table_selection_needed", "confirm_needed", "awaiting_user_action"}
 CONFIRMATION_MODE_LABELS = {

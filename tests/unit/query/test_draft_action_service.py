@@ -175,7 +175,7 @@ async def test_confirm_action_advances_table_resolution_to_draft_generation():
     assert result["action"]["action_type"] == "confirm"
     assert result["session"]["status"] == "running"
     assert result["session"]["current_node"] == "draft_generation"
-    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "request_explanation", "exit_current"]
+    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "revise", "request_explanation", "exit_current"]
     assert result["session"]["state_json"]["selected_table_ids"] == ["table_land_deal"]
     assert result["session"]["state_json"]["provisional_draft"]["status"] == "pending_generation"
     assert result["session"]["state_json"]["provisional_draft"]["confirmation_required"] is True
@@ -227,7 +227,7 @@ async def test_choose_table_alias_maps_to_confirm_action():
 
     assert result["action"]["action_type"] == "confirm"
     assert result["session"]["current_node"] == "draft_generation"
-    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "request_explanation", "exit_current"]
+    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "revise", "request_explanation", "exit_current"]
     assert result["session"]["state_json"]["selected_table_ids"] == ["table_land_deal"]
 
 
@@ -280,7 +280,7 @@ async def test_revise_action_advances_to_draft_generation_and_keeps_revision_req
     assert result["action"]["action_type"] == "revise"
     assert result["session"]["status"] == "running"
     assert result["session"]["current_node"] == "draft_generation"
-    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "request_explanation", "exit_current"]
+    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "revise", "request_explanation", "exit_current"]
     assert result["session"]["state_json"]["revision_request"]["text"] == "改成查询武汉市"
     assert result["session"]["state_json"]["provisional_draft"]["status"] == "pending_generation"
     assert result["session"]["state_json"]["provisional_draft"]["confirmation_required"] is True
@@ -335,7 +335,7 @@ async def test_confirm_from_draft_confirmation_marks_draft_as_approved():
 
     assert result["action"]["action_type"] == "confirm"
     assert result["session"]["current_node"] == "draft_generation"
-    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "request_explanation", "exit_current"]
+    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "revise", "request_explanation", "exit_current"]
     assert result["session"]["state_json"]["provisional_draft"] is None
     assert result["session"]["state_json"]["confirmed_draft"]["status"] == "confirmed"
     assert result["session"]["state_json"]["confirmed_draft"]["natural_language"] == "按年份统计武汉土地成交均价"
@@ -808,6 +808,44 @@ async def test_change_table_is_allowed_on_draft_generation_node():
     assert result["action"]["action_type"] == "change_table"
     assert result["session"]["current_node"] == "table_resolution"
     assert result["session"]["state_json"]["pending_actions"] == ["confirm", "change_table", "request_explanation", "exit_current"]
+    assert result["session"]["state_json"]["interruption_requested"] is True
+
+
+@pytest.mark.asyncio
+async def test_revise_is_allowed_on_draft_generation_node():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="running",
+        current_node="draft_generation",
+        state_json={
+            "draft_version": 3,
+            "question_text": "查询土地成交总价",
+            "pending_actions": ["change_table", "revise", "request_explanation", "exit_current"],
+            "selected_table_ids": ["table_land_deal"],
+            "selected_table_id": "table_land_deal",
+        },
+    )
+
+    service = DraftActionService(db)
+    result = await service.apply_action(
+        query_id=query_id,
+        action_type="revise",
+        payload={"text": "改成只看工业用地"},
+        natural_language_reply=None,
+        draft_version=3,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="running-revise-1",
+    )
+
+    assert result["action"]["action_type"] == "revise"
+    assert result["session"]["current_node"] == "draft_generation"
+    assert result["session"]["state_json"]["pending_actions"] == ["change_table", "revise", "request_explanation", "exit_current"]
+    assert result["session"]["state_json"]["revision_request"] == {"text": "改成只看工业用地"}
     assert result["session"]["state_json"]["interruption_requested"] is True
 
 

@@ -117,12 +117,19 @@ def test_chat_view_uses_result_action_contract_for_result_stage_actions():
     assert "const optimisticReplyMessageId = (isPendingReply || isResultRevisionReply)" in content
     assert "rollbackOptimisticUserMessage(optimisticReplyMessageId, text)" in content
     assert "return await submitPendingSessionAction({" in content
+    assert "v-if=\"hasVisibleResultActions(msg)\"" in content
+    assert "v-if=\"hasVisibleResultActions(msg) && !hasVisibleRunningSessionActions(msg)\"" not in content
     assert "semanticAction: 'manual_select_table'" not in content
     assert "const restartingQueryIds = reactive({})" not in content
     assert "function canRetryTableSelection(msg)" not in content
     assert "不是这张表，重新选表" not in content
     assert "pendingConfirm.value = payload.confirmation" not in content
     assert "pendingTableSelection.value = payload.table_selection" not in content
+    assert "function requestRunningSessionTableReselection" not in content
+    assert "function getRunningSessionActionHint" not in content
+    assert "function getVisibleRunningSessionActions" not in content
+    assert "function hasVisibleRunningSessionActions" not in content
+    assert "class=\"running-session-panel\"" not in content
 
 
 def test_query_action_controls_composable_holds_action_mapping_contract():
