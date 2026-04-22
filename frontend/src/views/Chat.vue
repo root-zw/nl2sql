@@ -210,8 +210,16 @@
                       ></div>
                     </div>
                     <!-- 叙述生成中的占位 -->
-                    <div v-else-if="isNarrativePendingForMessage(msg)" class="summary-section loading">
-                      <span class="loading-text">正在生成分析...</span>
+                    <div v-else-if="isNarrativePendingForMessage(msg)" class="summary-section loading narrative-loading">
+                      <span class="narrative-loading-orb" aria-hidden="true"></span>
+                      <div class="narrative-loading-body">
+                        <span class="loading-text loading-text-animated">正在生成分析</span>
+                        <span class="narrative-loading-dots" aria-hidden="true">
+                          <span></span>
+                          <span></span>
+                          <span></span>
+                        </span>
+                      </div>
                     </div>
 
                     <!-- 以下内容在叙述完成后才显示 -->
@@ -4314,6 +4322,101 @@ watch(isLoggedIn, (val) => {
 
 .summary-section.loading {
   opacity: 0.8;
+}
+
+.narrative-loading {
+  align-items: center;
+  padding: 10px 14px;
+  border: 1px solid rgba(99, 102, 241, 0.12);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(99, 102, 241, 0.02)),
+    var(--bg-main);
+}
+
+.narrative-loading-orb {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #ffffff 0%, #c7d2fe 30%, var(--accent-color) 100%);
+  box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.24);
+  animation: narrative-orb-pulse 1.8s ease-in-out infinite;
+}
+
+.narrative-loading-body {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.loading-text-animated {
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    var(--text-secondary) 0%,
+    var(--accent-color) 45%,
+    var(--text-secondary) 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: narrative-text-shimmer 1.8s linear infinite;
+}
+
+.narrative-loading-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.narrative-loading-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-color);
+  opacity: 0.28;
+  animation: narrative-dot-bounce 1.2s ease-in-out infinite;
+}
+
+.narrative-loading-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.narrative-loading-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes narrative-orb-pulse {
+  0%, 100% {
+    transform: scale(0.92);
+    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.16);
+  }
+  50% {
+    transform: scale(1.08);
+    box-shadow: 0 0 0 8px rgba(99, 102, 241, 0);
+  }
+}
+
+@keyframes narrative-text-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -20% 0;
+  }
+}
+
+@keyframes narrative-dot-bounce {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.28;
+  }
+  40% {
+    transform: translateY(-3px);
+    opacity: 0.95;
+  }
 }
 
 .summary-icon {

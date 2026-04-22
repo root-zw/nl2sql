@@ -322,6 +322,19 @@ def test_chat_view_uses_sticky_scroll_instead_of_forcing_stream_updates_to_botto
     assert content.count("scrollToBottom({ force: true })") >= 4
 
 
+def test_chat_view_animates_narrative_pending_placeholder():
+    chat_view = ROOT_DIR / "frontend" / "src" / "views" / "Chat.vue"
+    content = chat_view.read_text(encoding="utf-8")
+
+    assert "class=\"summary-section loading narrative-loading\"" in content
+    assert "class=\"narrative-loading-orb\"" in content
+    assert "class=\"loading-text loading-text-animated\"" in content
+    assert "class=\"narrative-loading-dots\"" in content
+    assert "@keyframes narrative-orb-pulse" in content
+    assert "@keyframes narrative-text-shimmer" in content
+    assert "@keyframes narrative-dot-bounce" in content
+
+
 def test_chat_view_only_shows_empty_result_fallback_without_narrative_summary():
     chat_view = ROOT_DIR / "frontend" / "src" / "views" / "Chat.vue"
     content = chat_view.read_text(encoding="utf-8")
