@@ -159,27 +159,6 @@
                     <span class="error-icon">❌</span>
                     <span>{{ msg.error_message || '查询失败' }}</span>
                   </div>
-                  <div
-                    v-if="msg.status === 'error' && hasVisibleResultActions(msg)"
-                    class="result-action-bar result-action-bar-error"
-                  >
-                    <button
-                      v-for="action in getVisibleResultActions(msg)"
-                      :key="action.key"
-                      class="inline-session-btn"
-                      @click="action.onClick()"
-                      :disabled="action.disabled"
-                    >
-                      {{ action.label }}
-                    </button>
-                  </div>
-                  <div
-                    v-if="msg.status === 'error' && isResultRevisionActive(msg)"
-                    class="result-action-note"
-                  >
-                    已进入修改模式，请在下方输入修改意见。
-                  </div>
-
                   <!-- 消息内容（包括 cancelled/pending/running/completed，只要有内容就显示） -->
                   <div v-if="msg.status !== 'error' && (hasAnyContent(msg) || msg.status === 'pending' || msg.status === 'running')" class="message-result">
                     <!-- 0. 思考过程（类似 Deep Research 效果） -->
@@ -336,24 +315,6 @@
                         <p v-else>查询结果为空</p>
                       </div>
                     </template>
-
-                    <div v-if="hasVisibleResultActions(msg) && !hasVisibleRunningSessionActions(msg)" class="result-action-bar">
-                      <button
-                        v-for="action in getVisibleResultActions(msg)"
-                        :key="action.key"
-                        class="inline-session-btn"
-                        @click="action.onClick()"
-                        :disabled="action.disabled"
-                      >
-                        {{ action.label }}
-                      </button>
-                    </div>
-                    <div
-                      v-if="isResultRevisionActive(msg) && !hasVisibleRunningSessionActions(msg)"
-                      class="result-action-note"
-                    >
-                      已进入修改模式，请在下方输入修改意见。
-                    </div>
 
                     <div v-if="hasVisibleRunningSessionActions(msg)" class="running-session-panel">
                       <div class="result-action-note running-session-note">

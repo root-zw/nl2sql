@@ -96,7 +96,7 @@ def test_chat_view_uses_result_action_contract_for_result_stage_actions():
     assert "loadResultSessionSnapshot," in content
     assert "hydrateResultActionContracts," in content
     assert "canUseResultAction," in content
-    assert "v-for=\"action in getVisibleResultActions(msg)\"" in content
+    assert "v-for=\"action in getVisibleResultActions(msg)\"" not in content
     assert "async function submitResultSessionAction" in content
     assert "function startResultRevision(msg)" in content
     assert "async function submitResultRevisionReply(text)" in content
@@ -107,7 +107,6 @@ def test_chat_view_uses_result_action_contract_for_result_stage_actions():
     assert "semanticAction: 'confirm_draft'" in content
     assert "semanticAction: 'cancel_query'" in content
     assert "await loadResultSessionSnapshot(msg.query_id)" in content
-    assert "msg.status === 'error' && hasVisibleResultActions(msg)" in content
     assert "当前将作为上一条结果的修改意见提交" in content
     assert "async function requestManualTableSelection()" in content
     assert "resetAllTablesFilter()" in content
@@ -118,7 +117,9 @@ def test_chat_view_uses_result_action_contract_for_result_stage_actions():
     assert "rollbackOptimisticUserMessage(optimisticReplyMessageId, text)" in content
     assert "return await submitPendingSessionAction({" in content
     assert "v-if=\"hasVisibleResultActions(msg)\"" not in content
-    assert "v-if=\"hasVisibleResultActions(msg) && !hasVisibleRunningSessionActions(msg)\"" in content
+    assert "v-if=\"hasVisibleResultActions(msg) && !hasVisibleRunningSessionActions(msg)\"" not in content
+    assert "msg.status === 'error' && hasVisibleResultActions(msg)" not in content
+    assert "v-for=\"action in getVisibleResultActions(msg)\"" not in content
     assert "semanticAction: 'manual_select_table'" not in content
     assert "const restartingQueryIds = reactive({})" not in content
     assert "function canRetryTableSelection(msg)" not in content
