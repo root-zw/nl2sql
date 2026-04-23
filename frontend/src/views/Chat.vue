@@ -141,9 +141,6 @@
                 <!-- 用户消息 -->
                 <div v-if="msg.role === 'user'" class="user-message">
                   <div>{{ msg.content }}</div>
-                  <div v-if="getMessageConfirmationModeLabel(msg)" class="user-message-meta">
-                    本次确认：{{ getMessageConfirmationModeLabel(msg) }}
-                  </div>
                 </div>
 
                 <!-- AI 回答 -->
@@ -494,7 +491,6 @@
               </option>
             </select>
             <div class="confirmation-mode-group" :class="{ disabled: preQueryConfirmationLocked }">
-              <span class="confirmation-mode-label">确认策略</span>
               <button
                 v-for="option in confirmationModeOptions"
                 :key="option.value"
@@ -754,10 +750,6 @@ const confirmationModeOptions = [
   }
 ]
 const queryConfirmationMode = ref(null)
-const confirmationModeLabelMap = {
-  adaptive: '智能确认',
-  always_confirm: '始终确认'
-}
 
 // WebSocket
 const wsRef = ref(null)
@@ -937,15 +929,6 @@ function consumeQueryConfirmationMode() {
   const mode = queryConfirmationMode.value
   queryConfirmationMode.value = null
   return mode
-}
-
-function getConfirmationModeLabel(mode) {
-  return confirmationModeLabelMap[mode] || ''
-}
-
-function getMessageConfirmationModeLabel(msg) {
-  return msg?.metadata?.confirmation_mode_label ||
-    getConfirmationModeLabel(msg?.metadata?.confirmation_mode)
 }
 
 function normalizeThinkingSteps(steps) {
@@ -1650,8 +1633,7 @@ async function handleSendMessage() {
   }
 
   const userMessageMetadata = confirmationModeForDisplay ? {
-      confirmation_mode: confirmationModeForDisplay,
-      confirmation_mode_label: getConfirmationModeLabel(confirmationModeForDisplay)
+      confirmation_mode: confirmationModeForDisplay
     } : null
 
   const optimisticReplyMessageId = isPendingReply
@@ -2098,10 +2080,6 @@ function updateAssistantMessage(messageId, updates) {
   const msg = findMessage(messageId)
   if (msg) {
     Object.assign(msg, updates)
-    // 如果有 SQL，默认展开显示
-    if (updates.sql_text && !expandedSql[messageId]) {
-      expandedSql[messageId] = true
-    }
   }
 }
 
@@ -3485,14 +3463,6 @@ watch(isLoggedIn, (val) => {
   width: fit-content;
   max-width: 100%;
   word-break: break-word;
-}
-
-.user-message-meta {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.18);
-  font-size: 12px;
-  opacity: 0.88;
 }
 
 .assistant-message {
@@ -5321,13 +5291,6 @@ watch(isLoggedIn, (val) => {
   opacity: 0.6;
 }
 
-.confirmation-mode-label {
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 0 4px;
-  white-space: nowrap;
-}
-
 .confirmation-mode-btn {
   border: 0;
   background: transparent;
@@ -5874,10 +5837,6 @@ watch(isLoggedIn, (val) => {
     justify-content: space-between;
   }
 
-  .confirmation-mode-label {
-    padding-left: 2px;
-  }
-
   .confirmation-mode-btn {
     flex: 1;
     min-width: 0;
@@ -5970,11 +5929,6 @@ watch(isLoggedIn, (val) => {
   .confirmation-mode-group {
     width: 100%;
     flex-wrap: wrap;
-  }
-
-  .confirmation-mode-label {
-    width: 100%;
-    padding: 0 0 2px 2px;
   }
 }
 

@@ -64,8 +64,10 @@ def test_chat_view_simplifies_confirmation_mode_to_two_visible_options():
     assert "label: '始终确认'" in content
     assert "label: '跟随系统'" not in content
     assert "value: 'system'" not in content
-    assert "本次确认：" in content
-    assert "function getMessageConfirmationModeLabel(msg)" in content
+    assert "本次确认：" not in content
+    assert "确认策略" not in content
+    assert "function getMessageConfirmationModeLabel(msg)" not in content
+    assert ".confirmation-mode-label {" not in content
 
 
 def test_chat_view_starts_fresh_query_when_pending_reply_becomes_new_query():
@@ -282,6 +284,7 @@ def test_chat_view_restores_thinking_steps_and_reuses_existing_assistant_message
     assert "existingMsg.thinking_steps = null" in content
     assert "delete thinkingSteps[snapshotMessageId]" in content
     assert "delete expandedSql[snapshotMessageId]" in content
+    assert "expandedSql[messageId] = true" not in content
 
 
 def test_chat_view_shows_result_details_before_narrative_finishes():
