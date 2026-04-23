@@ -14,14 +14,16 @@ def test_chat_view_prefers_confirmation_view_for_pending_session_rendering():
     assert "import { useQuerySessionSnapshots } from '@/composables/useQuerySessionSnapshots'" in content
     assert "v-if=\"pendingSessionNode === 'table_resolution' && pendingSessionChallengeItem\"" in content
     assert "请在下方选择数据表，可单选，也可多选。" in content
-    assert "请从全部数据表中选择，可单选，也可多选。" in content
     assert "const hasLegacyPendingConfirmFallback = computed(() =>" not in content
     assert "const hasLegacyPendingTableSelectionFallback = computed(() =>" not in content
     assert "const {\n  normalizeSessionSnapshot,\n  cacheResultSessionSnapshot," in content
-    assert "const {\n  applyPendingSessionSnapshot,\n  loadQuerySessionSnapshot,\n  buildPendingExplanation,\n  isManualTableOverride," in content
-    assert "const {\n  pendingSessionTitle,\n  pendingSessionNodeLabel,\n  pendingSessionIcon,\n  pendingSessionSummaryItems," in content
+    assert "const {\n  applyPendingSessionSnapshot,\n  loadQuerySessionSnapshot,\n  buildPendingExplanation,\n} = usePendingSessionViewModels({" in content
+    assert "const {\n  pendingSessionTitle,\n  pendingSessionNodeLabel,\n  pendingSessionIcon,\n  pendingSessionLeadLabel," in content
+    assert "hasPendingSessionLead," in content
+    assert "pendingSessionSummaryItems," in content
     assert "} = usePendingSessionPresentation({" in content
-    assert "const { pendingSessionActionButtons, getVisibleResultActions, hasVisibleResultActions } = useQueryActionControls({" in content
+    assert "const { pendingSessionActionButtons } = useQueryActionControls({" in content
+    assert "returnToPreviousPendingPage," in content
     assert "v-for=\"action in pendingSessionActionButtons\"" in content
     assert "v-if=\"hasLegacyPendingConfirmFallback\"" not in content
     assert "v-if=\"hasLegacyPendingTableSelectionFallback\"" not in content
@@ -30,7 +32,7 @@ def test_chat_view_prefers_confirmation_view_for_pending_session_rendering():
     assert "请选择接下来要使用的数据表" not in content
     assert "请选择要继续生成 IR 的数据表" not in content
     assert "res.data?.active_query_session || null" in content
-    assert "const snapshot = applyPendingSessionSnapshot(activeQuerySession, { preserveSelection: true })" in content
+    assert "applyPendingSessionSnapshot(activeQuerySession, { preserveSelection: true })" in content
     assert "messages.value = rawMessages.map(hydrateConversationMessage)" in content
     assert "v-if=\"pendingSessionSummaryItems.length\"" in content
     assert "class=\"understanding-list\"" in content
@@ -91,29 +93,24 @@ def test_chat_view_uses_result_action_contract_for_result_stage_actions():
     chat_view = ROOT_DIR / "frontend" / "src" / "views" / "Chat.vue"
     content = chat_view.read_text(encoding="utf-8")
 
-    assert "const resultActionLoadingIds = reactive({})" in content
-    assert "const resultReplyContext = ref(null)" in content
+    assert "const RUNNING_SESSION_SYNC_MIN_INTERVAL_MS = 800" in content
+    assert "const runningSessionContractSyncAt = reactive({})" in content
     assert "loadResultSessionSnapshot," in content
     assert "hydrateResultActionContracts," in content
-    assert "canUseResultAction," in content
+    assert "async function syncRunningSessionActionContract(queryId, { force = false } = {})" in content
     assert "v-for=\"action in getVisibleResultActions(msg)\"" not in content
-    assert "async function submitResultSessionAction" in content
-    assert "function startResultRevision(msg)" in content
-    assert "async function submitResultRevisionReply(text)" in content
     assert "function getPendingActionBinding(semanticAction)" in content
+    assert "async function returnToPreviousPendingPage()" in content
     assert "const resolvedActionType = semanticAction ? getPendingActionBinding(semanticAction) : actionType" in content
     assert "semanticAction: 'choose_table'" in content
     assert "semanticAction: 'approve_execution'" in content
     assert "semanticAction: 'confirm_draft'" in content
     assert "semanticAction: 'cancel_query'" in content
-    assert "await loadResultSessionSnapshot(msg.query_id)" in content
-    assert "当前将作为上一条结果的修改意见提交" in content
-    assert "async function requestManualTableSelection()" in content
-    assert "resetAllTablesFilter()" in content
-    assert "await expandAllTables()" in content
+    assert "void loadResultSessionSnapshot(currentMsg.query_id, { force: true })" in content
+    assert "void syncRunningSessionActionContract(data.query_id || currentQueryId.value)" in content
     assert "function appendUserMessage(text, { metadata = null, optimistic = false } = {})" in content
     assert "function rollbackOptimisticUserMessage(messageId, text = '')" in content
-    assert "const optimisticReplyMessageId = (isPendingReply || isResultRevisionReply)" in content
+    assert "const optimisticReplyMessageId = isPendingReply" in content
     assert "rollbackOptimisticUserMessage(optimisticReplyMessageId, text)" in content
     assert "return await submitPendingSessionAction({" in content
     assert "v-if=\"hasVisibleResultActions(msg)\"" not in content
@@ -126,14 +123,8 @@ def test_chat_view_uses_result_action_contract_for_result_stage_actions():
     assert "不是这张表，重新选表" not in content
     assert "pendingConfirm.value = payload.confirmation" not in content
     assert "pendingTableSelection.value = payload.table_selection" not in content
-    assert "function requestRunningSessionTableReselection" in content
-    assert "function getRunningSessionActionHint" in content
-    assert "function getVisibleRunningSessionActions" in content
-    assert "function hasVisibleRunningSessionActions" in content
     assert "function hasConfirmedDraftSnapshot(snapshot)" in content
-    assert "if (msg?.sql_text || msg?.result_data || msg?.result_summary) return null" in content
-    assert "if (!snapshot || snapshot.status !== 'running' || hasConfirmedDraftSnapshot(snapshot)) return null" in content
-    assert "class=\"running-session-panel\"" in content
+    assert ".running-session-panel {" in content
 
 
 def test_query_action_controls_composable_holds_action_mapping_contract():
@@ -141,21 +132,19 @@ def test_query_action_controls_composable_holds_action_mapping_contract():
     content = composable.read_text(encoding="utf-8")
 
     assert "export function useQueryActionControls({" in content
-    assert "const RESULT_ACTION_ORDER = ['change_table', 'revise']" in content
     assert "const pendingSessionActionButtons = computed(() =>" in content
-    assert "function getVisibleResultActions(msg)" in content
     assert "buildPendingActionButton('choose_table'" in content
+    assert "buildPendingActionButton('return_previous'" in content
     assert "buildPendingActionButton('cancel_query'" in content
-    assert "pendingTableSelection," in content
+    assert "returnToPreviousPendingPage," in content
     assert "label: '继续执行'" in content
-    assert "label: '查看所有表'" in content
+    assert "label: '返回上一页'" in content
     assert "确认所选（${selectedTableIds.value.length}）" in content
     assert "'确认所选'" in content
     assert "label: '改问题'" in content
     assert "requestPendingExplanation" not in content
     assert "label: '不是这张表'" not in content
     assert "hasModelRecommendedTables" not in content
-    assert "revise: '修改问题'" in content
     assert "request_explanation: '查看系统理解'" not in content
     assert "继续修改" not in content
     assert "解释一下" not in content
@@ -235,12 +224,13 @@ def test_pending_session_presentation_composable_holds_node_display_contract():
     assert "function normalizeSummaryItem(item)" in content
     assert "function splitDraftUnderstandingItems(text)" in content
     assert "function buildRevisionSummaryItems(revisionText, existingItems = [])" in content
-    assert "for (const prefix of ['当前数据表：', '当前涉及数据表：'])" in content
+    assert "const TABLE_SOURCE_PREFIXES = ['当前数据表：', '当前涉及数据表：']" in content
+    assert "for (const prefix of TABLE_SOURCE_PREFIXES)" in content
     assert ".split('；')" in content
     assert "pendingConfirmationView.value?.draft?.natural_language || ''" in content
     assert "pendingTableSelection.value?.confirmation_reason" in content
     assert "return looksLikeUuid(domainHint) ? '' : domainHint" in content
-    assert "请从全部数据表中选择要查询的数据表，可单选，也可多选。" in content
+    assert "当前数据表尚未确定" in content
     assert "需要您确认后再继续生成 IR" not in content
     # draft_confirmation 分支不再把 safe_summary.known_constraints 合并到主气泡，避免与 natural_language 重复
     assert "draftSummaryItems.push(...safeConstraints)" not in content
@@ -272,7 +262,8 @@ def test_chat_view_table_selection_is_always_multi_selectable():
     content = chat_view.read_text(encoding="utf-8")
 
     assert "selectedTableIds.value.push(tableId)" in content
-    assert "selectedTableIds.value = [...selectedTableIds.value, tableId]" in content
+    assert "selectedTableIds.value.splice(index, 1)" in content
+    assert "selectedTableId.value = selectedTableIds.value[0] || null" in content
     assert "if (pendingTableSelection.value?.allow_multi_select)" not in content
 
 

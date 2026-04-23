@@ -495,6 +495,96 @@ async def test_manual_select_table_alias_maps_to_change_table_with_manual_overri
 
 
 @pytest.mark.asyncio
+async def test_change_table_from_draft_confirmation_supports_return_previous_roundtrip():
+    db = FakeActionDB()
+    query_id = uuid4()
+    session_service = QuerySessionService(db)
+    await session_service.upsert_session(
+        query_id=query_id,
+        user_id=None,
+        status="awaiting_user_action",
+        current_node="draft_confirmation",
+        state_json={
+            "draft_version": 2,
+            "question_text": "查询土地成交情况",
+            "pending_actions": ["confirm", "revise", "change_table", "request_explanation", "exit_current"],
+            "selected_table_ids": ["table_land_deal"],
+            "selected_table_id": "table_land_deal",
+            "recommended_table_ids": ["table_land_deal"],
+            "table_resolution_state": {
+                "recommended_table_ids": ["table_land_deal"],
+                "selected_table_ids": ["table_land_deal"],
+                "candidates": [
+                    {"table_id": "table_land_deal", "table_name": "土地成交表", "confidence": 0.93},
+                    {"table_id": "table_land_plan", "table_name": "土地规划表", "confidence": 0.61},
+                ],
+            },
+            "provisional_draft": {
+                "status": "provisional",
+                "natural_language": "查询土地成交情况",
+                "system_understanding": [{"text": "统计武汉市各行政区土地成交金额"}],
+                "selected_table_names": ["土地成交表"],
+                "open_points": ["请确认当前查询草稿是否符合预期"],
+                "confirmation_required": True,
+                "table_dependent": True,
+                "invalidate_on_table_change": True,
+            },
+        },
+    )
+
+    service = DraftActionService(db)
+    change_result = await service.apply_action(
+        query_id=query_id,
+        action_type="change_table",
+        payload={"reason": "用户希望重新选表"},
+        natural_language_reply=None,
+        draft_version=2,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="change-table-with-return-1",
+    )
+
+    changed_session = change_result["session"]
+    assert change_result["action"]["action_type"] == "change_table"
+    assert changed_session["current_node"] == "table_resolution"
+    assert changed_session["state_json"]["pending_actions"] == [
+        "confirm",
+        "return_previous",
+        "change_table",
+        "request_explanation",
+        "exit_current",
+    ]
+    assert changed_session["state_json"]["return_previous_snapshot"]["current_node"] == "draft_confirmation"
+    assert changed_session["state_json"]["provisional_draft"] is None
+
+    return_result = await service.apply_action(
+        query_id=query_id,
+        action_type="return_previous",
+        payload={},
+        natural_language_reply=None,
+        draft_version=2,
+        actor_type="user",
+        actor_id="u1",
+        idempotency_key="return-previous-1",
+    )
+
+    restored_session = return_result["session"]
+    assert return_result["action"]["action_type"] == "return_previous"
+    assert restored_session["status"] == "awaiting_user_action"
+    assert restored_session["current_node"] == "draft_confirmation"
+    assert restored_session["state_json"]["pending_actions"] == [
+        "confirm",
+        "revise",
+        "change_table",
+        "request_explanation",
+        "exit_current",
+    ]
+    assert restored_session["state_json"]["selected_table_ids"] == ["table_land_deal"]
+    assert restored_session["state_json"]["provisional_draft"]["natural_language"] == "查询土地成交情况"
+    assert "return_previous_snapshot" not in restored_session["state_json"]
+
+
+@pytest.mark.asyncio
 async def test_natural_language_pending_reply_can_be_resolved_to_new_query():
     db = FakeActionDB()
     query_id = uuid4()

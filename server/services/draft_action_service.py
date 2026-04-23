@@ -52,6 +52,7 @@ ALLOWED_ACTIONS = {
         "confirm",
         "revise",
         "change_table",
+        "return_previous",
         "choose_option",
         "request_explanation",
         "exit_current",
@@ -118,6 +119,8 @@ LEGACY_CONFIRMATION_STATE_KEYS = [
 ]
 
 RUNNING_RESULT_PENDING_ACTIONS = ["change_table", "revise", "request_explanation", "exit_current"]
+RETURN_PREVIOUS_SNAPSHOT_KEY = "return_previous_snapshot"
+RETURN_PREVIOUS_SOURCE_NODES = {"draft_confirmation", "execution_guard"}
 
 
 class DraftActionService:
@@ -391,6 +394,56 @@ class DraftActionService:
         return None
 
     @staticmethod
+    def _build_return_previous_snapshot(session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        current_node = session.get("current_node")
+        if current_node not in RETURN_PREVIOUS_SOURCE_NODES:
+            return None
+
+        state = QuerySessionService._normalize_state(session.get("state_json"))
+        snapshot_state = {
+            key: value
+            for key, value in state.items()
+            if key != RETURN_PREVIOUS_SNAPSHOT_KEY
+        }
+        return sanitize_for_json(
+            {
+                "status": session.get("status"),
+                "current_node": current_node,
+                "state_json": snapshot_state,
+            }
+        )
+
+    @staticmethod
+    def _restore_transition_from_snapshot(
+        session: Dict[str, Any],
+        snapshot: Optional[Dict[str, Any]],
+    ) -> Tuple[str, str, Dict[str, Any]]:
+        normalized_snapshot = QuerySessionService._normalize_state(snapshot)
+        snapshot_status = str(normalized_snapshot.get("status") or "").strip()
+        snapshot_node = str(normalized_snapshot.get("current_node") or "").strip()
+        snapshot_state = QuerySessionService._normalize_state(normalized_snapshot.get("state_json"))
+        if not snapshot_status or not snapshot_node or not snapshot_state:
+            raise ValueError("当前没有可返回的上一页状态")
+
+        current_state = QuerySessionService._normalize_state(session.get("state_json"))
+        delete_keys = [
+            key
+            for key in current_state.keys()
+            if key not in snapshot_state
+        ]
+        if RETURN_PREVIOUS_SNAPSHOT_KEY not in delete_keys:
+            delete_keys.append(RETURN_PREVIOUS_SNAPSHOT_KEY)
+
+        return (
+            snapshot_status,
+            snapshot_node,
+            {
+                **snapshot_state,
+                "__delete_keys__": delete_keys,
+            },
+        )
+
+    @staticmethod
     def _derive_session_transition(
         *,
         session: Dict[str, Any],
@@ -451,16 +504,22 @@ class DraftActionService:
             )
 
         if action_type == "change_table":
+            return_previous_snapshot = DraftActionService._build_return_previous_snapshot(session)
             rejected = list(state.get("rejected_table_ids") or [])
             for item in state.get("selected_table_ids") or state.get("recommended_table_ids") or []:
                 if item and item not in rejected:
                     rejected.append(item)
+
+            pending_actions = ["confirm", "change_table", "request_explanation", "exit_current"]
+            if return_previous_snapshot:
+                pending_actions.insert(1, "return_previous")
+
             return (
                 "awaiting_user_action",
                 "table_resolution",
                 {
                     "__delete_keys__": LEGACY_CONFIRMATION_STATE_KEYS,
-                    "pending_actions": ["confirm", "change_table", "request_explanation", "exit_current"],
+                    "pending_actions": pending_actions,
                     "rejected_table_ids": rejected,
                     "invalidated_artifacts": ["draft", "ir", "sql", "result"],
                     "manual_table_override": payload.get("mode") == "manual_select",
@@ -475,11 +534,18 @@ class DraftActionService:
                     "execution_guard_state": None,
                     "execution_guard": None,
                     "revision_request": None,
+                    RETURN_PREVIOUS_SNAPSHOT_KEY: return_previous_snapshot,
                     "interruption_requested": session.get("status") == "running",
                     "interrupt_target_message_id": session.get("message_id"),
                     "interrupt_reason": "change_table",
                     "last_action": "change_table",
                 },
+            )
+
+        if action_type == "return_previous":
+            return DraftActionService._restore_transition_from_snapshot(
+                session,
+                state.get(RETURN_PREVIOUS_SNAPSHOT_KEY),
             )
 
         if action_type == "revise":

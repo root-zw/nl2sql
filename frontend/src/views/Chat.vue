@@ -1471,6 +1471,7 @@ const { pendingSessionActionButtons } = useQueryActionControls({
   canUsePendingAction,
   confirmTableSelection,
   requestTableReselection,
+  returnToPreviousPendingPage,
   focusPendingReplyInput,
   cancelPendingSession,
   approveExecution,
@@ -2268,6 +2269,13 @@ async function requestTableReselection() {
   await submitPendingSessionAction({
     actionType: 'change_table',
     payload: { reason: '用户点击不是这张表' },
+    preserveSelection: false
+  })
+}
+
+async function returnToPreviousPendingPage() {
+  await submitPendingSessionAction({
+    actionType: 'return_previous',
     preserveSelection: false
   })
 }

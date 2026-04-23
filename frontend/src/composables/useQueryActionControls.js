@@ -28,6 +28,7 @@ export function useQueryActionControls({
   canUsePendingAction,
   confirmTableSelection,
   requestTableReselection,
+  returnToPreviousPendingPage,
   focusPendingReplyInput,
   cancelPendingSession,
   approveExecution,
@@ -43,6 +44,13 @@ export function useQueryActionControls({
           className: 'btn-confirm',
           disabled: selectedTableIds.value.length === 0 || commonDisabled,
           onClick: () => confirmTableSelection()
+        }),
+        buildPendingActionButton('return_previous', {
+          label: '返回上一页',
+          className: 'btn-secondary',
+          disabled: commonDisabled,
+          onClick: () => returnToPreviousPendingPage(),
+          visible: canUsePendingAction('return_previous')
         }),
         buildPendingActionButton('revise', {
           label: '改问题',
