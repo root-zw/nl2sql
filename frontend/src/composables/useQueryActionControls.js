@@ -1,11 +1,5 @@
 import { computed } from 'vue'
 
-const RESULT_ACTION_ORDER = ['change_table', 'revise']
-const RESULT_ACTION_LABELS = {
-  change_table: '重新选表',
-  revise: '修改问题'
-}
-
 function buildPendingActionButton(key, {
   label,
   className = 'btn-secondary',
@@ -38,11 +32,6 @@ export function useQueryActionControls({
   cancelPendingSession,
   approveExecution,
   confirmDraftRevision,
-  canUseResultAction,
-  isResultRevisionActive,
-  isResultActionBusy,
-  reopenTableSelectionForMessage,
-  startResultRevision,
 }) {
   const pendingSessionActionButtons = computed(() => {
     const commonDisabled = pendingSessionActionLoading.value
@@ -136,48 +125,7 @@ export function useQueryActionControls({
     return []
   })
 
-  function getResultActionLabel(msg, actionType) {
-    if (actionType === 'revise') {
-      return isResultRevisionActive(msg) ? '请输入修改意见...' : RESULT_ACTION_LABELS[actionType]
-    }
-
-    if (isResultActionBusy(msg)) {
-      return '处理中...'
-    }
-
-    return RESULT_ACTION_LABELS[actionType] || actionType
-  }
-
-  function createResultActionHandler(msg, actionType) {
-    if (actionType === 'change_table') {
-      return () => reopenTableSelectionForMessage(msg)
-    }
-    if (actionType === 'revise') {
-      return () => startResultRevision(msg)
-    }
-    return () => {}
-  }
-
-  function getVisibleResultActions(msg) {
-    const actionKey = msg?.message_id || msg?.query_id || 'result'
-    return RESULT_ACTION_ORDER
-      .filter(actionType => canUseResultAction(msg, actionType))
-      .map(actionType => ({
-        key: `${actionKey}-${actionType}`,
-        actionType,
-        label: getResultActionLabel(msg, actionType),
-        disabled: isResultActionBusy(msg),
-        onClick: createResultActionHandler(msg, actionType)
-      }))
-  }
-
-  function hasVisibleResultActions(msg) {
-    return getVisibleResultActions(msg).length > 0
-  }
-
   return {
     pendingSessionActionButtons,
-    getVisibleResultActions,
-    hasVisibleResultActions,
   }
 }

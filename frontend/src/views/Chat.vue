@@ -768,9 +768,7 @@ const expandedRows = reactive({})
 const chartTypes = reactive({})  // message_id -> chart type
 const legendFirstClick = reactive({})  // message_id -> boolean (是否已首次点击图例)
 const legendSelected = reactive({})  // message_id -> { seriesName: boolean } (图例选中状态)
-const resultActionLoadingIds = reactive({})
 const runningSessionContractSyncAt = reactive({})
-const resultReplyContext = ref(null)
 const messagesContainer = ref(null)
 const inputTextarea = ref(null)
 
@@ -794,7 +792,7 @@ const canSendMessage = computed(() => {
 })
 
 const interactionLocked = computed(() => {
-  return loading.value || pendingSessionActionLoading.value || Object.keys(resultActionLoadingIds).length > 0
+  return loading.value || pendingSessionActionLoading.value
 })
 
 const renderableMessages = computed(() => {
@@ -829,7 +827,6 @@ const isAdmin = computed(() => {
 const inputPlaceholder = computed(() => {
   if (!isLoggedIn.value) return '请先登录后再提问...'
   if (hasActivePendingSession.value) return '当前处于确认阶段，可直接回复“确认”“改成…”“为什么这样理解”等...'
-  if (resultReplyContext.value?.queryId) return '请输入你希望修改的内容，按 Enter 提交到当前结果...'
   if (!currentConversationId.value) return '输入问题开始新对话，例如：2025年武昌区的成交宗数'
   return '输入追问内容，按 Enter 发送...'
 })
@@ -846,9 +843,6 @@ const inputHintText = computed(() => {
   const base = '按 Enter 发送，Shift + Enter 换行'
   if (hasActivePendingSession.value) {
     return `${base}；当前正在确认上一条查询`
-  }
-  if (resultReplyContext.value?.queryId) {
-    return `${base}；当前将作为上一条结果的修改意见提交`
   }
   if (queryConfirmationMode.value === 'adaptive') {
     return `${base}；本次使用智能确认`
@@ -1019,10 +1013,6 @@ function hydrateConversationMessage(msg) {
   }
 }
 
-function clearResultReplyContext() {
-  resultReplyContext.value = null
-}
-
 function resetPendingTableUi() {
   tableBatchIndex.value = 0
 }
@@ -1063,7 +1053,6 @@ function clearPendingSessionState({ keepQueryText = false } = {}) {
   pendingSessionSnapshot.value = null
   pendingConfirm.value = null
   pendingTableSelection.value = null
-  clearResultReplyContext()
   selectedTableIds.value = []
   selectedTableId.value = null
   resetPendingTableUi()
@@ -1390,10 +1379,6 @@ function getPendingActionBinding(semanticAction) {
   return pendingSessionSnapshot.value?.confirmation_view?.dependency_meta?.action_bindings?.[semanticAction] || semanticAction
 }
 
-function isResultActionBusy(msg) {
-  return Boolean(msg?.query_id && resultActionLoadingIds[msg.query_id])
-}
-
 async function syncRunningSessionActionContract(queryId, { force = false } = {}) {
   if (!queryId) return null
 
@@ -1433,16 +1418,10 @@ function hasConfirmedDraftSnapshot(snapshot) {
   )
 }
 
-function isResultRevisionActive(msg) {
-  return Boolean(msg?.query_id && resultReplyContext.value?.queryId === msg.query_id)
-}
-
 const {
   normalizeSessionSnapshot,
   cacheResultSessionSnapshot,
   getResultSessionSnapshot,
-  canUseResultAction,
-  getResultActionBinding,
   loadResultSessionSnapshot,
   hydrateResultActionContracts,
 } = useQuerySessionSnapshots({ messages })
@@ -1485,7 +1464,7 @@ const {
   pendingQueryText,
 })
 
-const { pendingSessionActionButtons, getVisibleResultActions, hasVisibleResultActions } = useQueryActionControls({
+const { pendingSessionActionButtons } = useQueryActionControls({
   pendingSessionNode,
   pendingSessionActionLoading,
   selectedTableIds,
@@ -1496,11 +1475,6 @@ const { pendingSessionActionButtons, getVisibleResultActions, hasVisibleResultAc
   cancelPendingSession,
   approveExecution,
   confirmDraftRevision,
-  canUseResultAction,
-  isResultRevisionActive,
-  isResultActionBusy,
-  reopenTableSelectionForMessage,
-  startResultRevision,
 })
 
 // 加载数据库连接列表
@@ -1654,8 +1628,7 @@ async function handleSendMessage() {
   const text = queryText.value.trim()
   if (!text) return
   const isPendingReply = hasActivePendingSession.value
-  const isResultRevisionReply = Boolean(resultReplyContext.value?.queryId)
-  const isFreshQuery = !hasActivePendingSession.value && !resultReplyContext.value?.queryId
+  const isFreshQuery = !hasActivePendingSession.value
   const confirmationModeForDisplay = isFreshQuery ? effectiveQueryConfirmationMode.value : null
   
   // 如果没有当前会话，先创建一个
@@ -1680,7 +1653,7 @@ async function handleSendMessage() {
       confirmation_mode_label: getConfirmationModeLabel(confirmationModeForDisplay)
     } : null
 
-  const optimisticReplyMessageId = (isPendingReply || isResultRevisionReply)
+  const optimisticReplyMessageId = isPendingReply
     ? appendUserMessage(text, { optimistic: true })
     : null
 
@@ -1697,14 +1670,6 @@ async function handleSendMessage() {
 
   if (isPendingReply) {
     const result = await handlePendingSessionReply(text)
-    if (!result) {
-      rollbackOptimisticUserMessage(optimisticReplyMessageId, text)
-    }
-    return
-  }
-
-  if (isResultRevisionReply) {
-    const result = await submitResultRevisionReply(text)
     if (!result) {
       rollbackOptimisticUserMessage(optimisticReplyMessageId, text)
     }
@@ -2260,10 +2225,6 @@ async function handleSessionActionResult(result, {
     return result
   }
 
-  if (result?.action?.action_type) {
-    clearResultReplyContext()
-  }
-
   const sessionSnapshot = cacheResultSessionSnapshot(result?.session)
   const snapshot = applyPendingSessionSnapshot(sessionSnapshot || result?.session, { preserveSelection })
 
@@ -2300,74 +2261,6 @@ async function handleSessionActionResult(result, {
     return result
   }
 
-  return result
-}
-
-async function submitResultSessionAction(msg, {
-  semanticAction,
-  payload = {},
-  preserveSelection = false,
-  idempotencyPrefix = 'result-action'
-} = {}) {
-  if (!msg?.query_id) {
-    ElMessage.error('未找到结果对应的查询会话。')
-    return null
-  }
-
-  await loadResultSessionSnapshot(msg.query_id)
-  if (!canUseResultAction(msg, semanticAction)) {
-    ElMessage.error('当前结果不支持该动作。')
-    return null
-  }
-
-  resultActionLoadingIds[msg.query_id] = true
-  try {
-    const actionType = getResultActionBinding(msg, semanticAction) || semanticAction
-    const res = await querySessionAPI.submitAction(msg.query_id, {
-      action_type: actionType,
-      payload,
-      draft_version: getResultSessionSnapshot(msg.query_id)?.state?.draft_version || 1,
-      actor_type: 'user',
-      actor_id: currentUser.value?.user_id || 'anonymous',
-      idempotency_key: buildIdempotencyKey(idempotencyPrefix)
-    })
-
-    return await handleSessionActionResult(res.data, { preserveSelection })
-  } catch (e) {
-    console.error('提交结果态动作失败', e)
-    ElMessage.error(e.response?.data?.detail || e.message || '提交结果态动作失败')
-    return null
-  } finally {
-    delete resultActionLoadingIds[msg.query_id]
-  }
-}
-
-function startResultRevision(msg) {
-  if (!msg?.query_id || !canUseResultAction(msg, 'revise')) return
-  resultReplyContext.value = {
-    queryId: msg.query_id,
-    messageId: msg.message_id,
-  }
-  focusPendingReplyInput('请修改为：')
-}
-
-async function submitResultRevisionReply(text) {
-  const queryId = resultReplyContext.value?.queryId
-  if (!queryId) return null
-
-  const result = await submitResultSessionAction(
-    { query_id: queryId },
-    {
-      semanticAction: 'revise',
-      payload: { text },
-      preserveSelection: true,
-      idempotencyPrefix: 'result-revise'
-    }
-  )
-
-  if (result) {
-    clearResultReplyContext()
-  }
   return result
 }
 
@@ -2767,23 +2660,6 @@ function canShowResultDetails(msg) {
   }
 
   return Boolean(msg?.result_summary)
-}
-
-async function reopenTableSelectionForMessage(msg) {
-  if (!msg?.query_id) return
-
-  try {
-    await submitResultSessionAction(msg, {
-      semanticAction: 'change_table',
-      payload: { reason: '用户在结果态点击重新选表' },
-      preserveSelection: false,
-      idempotencyPrefix: 'result-change-table'
-    })
-    scrollToBottom()
-  } catch (e) {
-    console.error('重新进入选表阶段失败', e)
-    ElMessage.error(e.response?.data?.detail || e.message || '重新进入选表阶段失败')
-  }
 }
 
 // 判断是否有表格数据
