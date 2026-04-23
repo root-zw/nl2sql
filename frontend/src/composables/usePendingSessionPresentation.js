@@ -53,7 +53,7 @@ function isTableSourceSummaryItem(item) {
     return true
   }
 
-  return /^我会基于.+(?:这张表来查询|这些表来完成这次查询)。?$/.test(text)
+  return /^(?:我会)?基于.+(?:这张表来查询|这些表来完成这次查询|查询|进行多表查询)。?$/.test(text)
 }
 
 function filterSummaryItems(items, { excludeTableSource = false } = {}) {

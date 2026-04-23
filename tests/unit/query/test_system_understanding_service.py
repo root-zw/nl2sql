@@ -147,8 +147,8 @@ def test_build_system_understanding_merges_model_summary_with_dynamic_scope_item
 
     assert [item.text for item in items] == [
         "已吸收本轮修改：只看招拍挂。",
-        "我会基于公开成交统计出让面积，并按成交年份展开",
-        "我会继续计算工业用地面积占比，并按同比展示增长率",
+        "基于公开成交统计出让面积，并按成交年份展开",
+        "计算工业用地面积占比，并按同比展示增长率",
         "系统默认只统计审核状态为“已审核”的记录。",
         "当前结果仅包含你有权限访问的城市：杭州、宁波。",
     ]
@@ -205,15 +205,14 @@ def test_build_system_understanding_filters_structured_template_bullets_for_rati
 
     texts = [item.text for item in items]
 
-    assert any("公开成交这张表" in text for text in texts)
+    assert any("基于公开成交查询" in text for text in texts)
     assert any("按成交年份展开，统计出让面积（平方米）" in text for text in texts)
     assert any("工业用地面积占比" in text for text in texts)
-    assert any("出让方式包含“招拍挂”" in text for text in texts)
-    assert any("同比分析并显示增长率" in text for text in texts)
+    assert any("仅包含" in text and "出让方式包含“招拍挂”" in text for text in texts)
+    assert any("进行同比分析并显示增长率" in text for text in texts)
     assert all("当前数据表：" not in text for text in texts)
     assert all("统计指标：" not in text for text in texts)
     assert all("我要基于【" not in text for text in texts)
-    assert all("分析方式：" not in text for text in texts)
 
 
 def test_build_system_understanding_keeps_natural_model_bullets_and_drops_structured_tail():
@@ -233,6 +232,29 @@ def test_build_system_understanding_keeps_natural_model_bullets_and_drops_struct
     texts = [item.text for item in items]
 
     assert texts == [
-        "我会先在公开成交里统计近10年的出让面积，并按成交年份展开。",
-        "结果会计算工业用地面积占比，并按同比展示增长率。",
+        "在公开成交里统计近10年的出让面积，并按成交年份展开。",
+        "计算工业用地面积占比，并按同比展示增长率。",
+    ]
+
+
+def test_build_system_understanding_rewrites_first_person_model_bullets_to_direct_style():
+    items = build_system_understanding(
+        ir_display={
+            "metrics": ["成交宗数"],
+            "dimensions": ["行政区"],
+        },
+        selected_table_names=["公开成交"],
+        model_understanding=[
+            {"text": "我会查询2025年武汉市所有行政区的土地成交数据"},
+            {"text": "结果会按行政区进行分组统计"},
+            {"text": "筛选范围会限制在2025年，并且只看出让方式包含“招拍挂”的记录。"},
+        ],
+        default_filter_items=[],
+        permission_scope_items=[],
+    )
+
+    assert [item.text for item in items] == [
+        "查询2025年武汉市所有行政区的土地成交数据",
+        "按行政区进行分组统计",
+        "范围限定在2025年，只包含出让方式包含“招拍挂”的记录。",
     ]

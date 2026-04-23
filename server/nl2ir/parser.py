@@ -70,8 +70,9 @@ def _get_default_system_prompt() -> str:
 2. 精确理解时间：具体日期使用 type=absolute，日期必须使用 ISO 格式字符串（YYYY-MM-DD）。
 3. 明确表达不确定性：如果有多种理解方式，请在 ambiguities 字段中说明。
 4. 保持简洁：不要过度解读，用户问什么就转换什么。
-5. 同时输出 4-7 条理解 bullets，使用自然语言说明系统准备如何查询，避免使用“当前数据表/统计指标/分析维度”这类标签话术。
+5. 同时输出 4-7 条理解 bullets，直接说明查询范围、指标、维度、筛选和分析方式，避免使用“当前数据表/统计指标/分析维度”这类标签话术。
 6. 禁止输出“我要基于【...】进行查询”“当前数据表：...”“统计指标：...”这类模板化槽位复述。
+7. 禁止输出“我会”“结果会”“系统会”“接下来会”这类第一人称或过程前缀，直接写干货。
 
 请严格调用 produce_ir 函数生成查询指令。"""
 
@@ -122,14 +123,14 @@ def _get_default_function_schema() -> Dict[str, Any]:
                     },
                     "understanding": {
                         "type": "object",
-                        "description": "给用户确认用的系统理解 bullets，必须与本次 IR 保持一致，且必须是自然语言，不要输出“当前数据表：...”或“我要基于【...】进行查询”这类模板句",
+                        "description": "给用户确认用的系统理解 bullets，必须与本次 IR 保持一致，且必须是自然语言。直接写范围、指标、维度、筛选和分析方式，不要输出“我会/结果会/系统会”前缀，也不要输出“当前数据表：...”或“我要基于【...】进行查询”这类模板句",
                         "properties": {
                             "bullets": {
                                 "type": "array",
                                 "items": {
                                     "type": "object",
                                     "properties": {
-                                        "text": {"type": "string", "description": "自然语言理解条目"},
+                                        "text": {"type": "string", "description": "自然语言理解条目，直接写结论和查询动作本身，不使用第一人称前缀"},
                                         "anchors": {
                                             "type": "array",
                                             "items": {"type": "string"},

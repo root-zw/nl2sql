@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Iterable, List, Optional
 
 import structlog
@@ -62,6 +63,58 @@ def _normalize_text(text: Any) -> str:
     return normalized.rstrip("；; \n")
 
 
+def _rewrite_understanding_text(text: str) -> str:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return ""
+
+    specialized_rules = (
+        (
+            r"^筛选范围会限制在(.+?)，并且只看(.+?)的记录(?:。)?$",
+            r"范围限定在\1，只包含\2的记录。",
+        ),
+        (
+            r"^筛选范围会限制在(.+?)(?:。)?$",
+            r"范围限定在\1。",
+        ),
+        (
+            r"^筛选范围会限制为(.+?)(?:。)?$",
+            r"仅包含\1的记录。",
+        ),
+        (
+            r"^结果会做(.+?)(?:。)?$",
+            r"进行\1。",
+        ),
+    )
+    for pattern, replacement in specialized_rules:
+        rewritten = re.sub(pattern, replacement, normalized)
+        if rewritten != normalized:
+            return _normalize_text(rewritten)
+
+    rewritten = normalized
+    leading_rules = (
+        (r"^我会先", ""),
+        (r"^我会继续", ""),
+        (r"^我会", ""),
+        (r"^结果会", ""),
+        (r"^同时会", "同时"),
+    )
+    for pattern, replacement in leading_rules:
+        rewritten = re.sub(pattern, replacement, rewritten)
+
+    cleanup_rules = (
+        (r"^基于(.+?)这张表来查询。?$", r"基于\1查询。"),
+        (r"^基于(.+?)这些表来完成这次查询。?$", r"基于\1进行多表查询。"),
+        (r"^按(.+?)来识别重复记录。?$", r"按\1识别重复记录。"),
+        (r"^围绕(.+?)来展示。?$", r"围绕\1展示。"),
+        (r"^返回(.+?)这些字段对应的明细记录。?$", r"返回\1对应的明细记录。"),
+    )
+    for pattern, replacement in cleanup_rules:
+        rewritten = re.sub(pattern, replacement, rewritten)
+
+    return _normalize_text(rewritten)
+
+
 def normalize_understanding_items(
     items: Optional[Iterable[Any]],
     *,
@@ -72,17 +125,17 @@ def normalize_understanding_items(
 
     for item in items or []:
         if isinstance(item, UnderstandingItem):
-            text = _normalize_text(item.text)
+            text = _rewrite_understanding_text(item.text)
             anchors = [str(anchor).strip() for anchor in item.anchors if str(anchor).strip()]
             source = item.source
             material = item.material
         elif isinstance(item, dict):
-            text = _normalize_text(item.get("text"))
+            text = _rewrite_understanding_text(item.get("text"))
             anchors = [str(anchor).strip() for anchor in (item.get("anchors") or []) if str(anchor).strip()]
             source = str(item.get("source") or default_source)
             material = bool(item.get("material", True))
         else:
-            text = _normalize_text(item)
+            text = _rewrite_understanding_text(item)
             anchors = []
             source = default_source
             material = True
