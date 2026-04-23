@@ -31,13 +31,9 @@ export function useQueryActionControls({
   pendingSessionNode,
   pendingSessionActionLoading,
   selectedTableIds,
-  pendingTableSelection,
-  showAllAccessibleTables,
   canUsePendingAction,
   confirmTableSelection,
   requestTableReselection,
-  backToRecommendTables,
-  requestManualTableSelection,
   focusPendingReplyInput,
   cancelPendingSession,
   approveExecution,
@@ -58,20 +54,6 @@ export function useQueryActionControls({
           className: 'btn-confirm',
           disabled: selectedTableIds.value.length === 0 || commonDisabled,
           onClick: () => confirmTableSelection()
-        }),
-        buildPendingActionButton('back_to_recommend', {
-          label: '返回推荐',
-          className: 'btn-back-to-recommend',
-          disabled: commonDisabled,
-          onClick: () => backToRecommendTables(),
-          visible: showAllAccessibleTables.value
-        }),
-        buildPendingActionButton('manual_select_table', {
-          label: '查看所有表',
-          className: 'btn-secondary',
-          disabled: commonDisabled,
-          onClick: () => requestManualTableSelection(),
-          visible: !showAllAccessibleTables.value
         }),
         buildPendingActionButton('revise', {
           label: '改问题',

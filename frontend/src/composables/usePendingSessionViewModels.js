@@ -33,7 +33,6 @@ export function usePendingSessionViewModels({
   clearPendingSessionState,
   resetPendingTableUi,
   formatEstimatedRows,
-  expandAllTables,
 }) {
   function getDefaultSelectedTableIds(card, state = {}, options = {}) {
     const preserveSelection = options.preserveSelection === true
@@ -243,10 +242,6 @@ export function usePendingSessionViewModels({
     try {
       const res = await fetchPendingQuerySessionSnapshotWithRetry(queryId)
       const snapshot = applyPendingSessionSnapshot(res.data, { preserveSelection })
-
-      if (snapshot?.current_node === 'table_resolution' && isManualTableOverride(snapshot)) {
-        await expandAllTables()
-      }
       return snapshot
     } catch (e) {
       console.warn('加载查询会话失败', e)

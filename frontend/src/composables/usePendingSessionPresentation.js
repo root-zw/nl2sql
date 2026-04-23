@@ -1,5 +1,7 @@
 import { computed } from 'vue'
 
+const TABLE_SOURCE_PREFIXES = ['当前数据表：', '当前涉及数据表：']
+
 function looksLikeUuid(value) {
   return typeof value === 'string' &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim())
@@ -20,13 +22,64 @@ function normalizeSummaryItem(item) {
   const text = typeof item === 'string' ? item.trim() : ''
   if (!text) return ''
   if (looksLikeUuid(text)) return ''
-  for (const prefix of ['当前数据表：', '当前涉及数据表：']) {
+  for (const prefix of TABLE_SOURCE_PREFIXES) {
     const normalizedTableSummary = normalizeTableSummaryItem(text, prefix)
     if (normalizedTableSummary !== null) {
       return normalizedTableSummary
     }
   }
   return text
+}
+
+function normalizeNameList(items) {
+  const normalized = []
+  const seen = new Set()
+
+  for (const item of items || []) {
+    const text = String(item || '').trim()
+    if (!text || looksLikeUuid(text) || seen.has(text)) continue
+    seen.add(text)
+    normalized.push(text)
+  }
+
+  return normalized
+}
+
+function isTableSourceSummaryItem(item) {
+  const text = normalizeSummaryItem(item)
+  if (!text) return false
+
+  if (TABLE_SOURCE_PREFIXES.some(prefix => text.startsWith(prefix))) {
+    return true
+  }
+
+  return /^我会基于.+(?:这张表来查询|这些表来完成这次查询)。?$/.test(text)
+}
+
+function filterSummaryItems(items, { excludeTableSource = false } = {}) {
+  return (items || [])
+    .map(normalizeSummaryItem)
+    .filter(Boolean)
+    .filter(item => !excludeTableSource || !isTableSourceSummaryItem(item))
+}
+
+function extractTableSourceNames(items) {
+  const names = []
+  const seen = new Set()
+
+  for (const rawItem of items || []) {
+    const text = normalizeSummaryItem(rawItem)
+    const prefix = TABLE_SOURCE_PREFIXES.find(currentPrefix => text.startsWith(currentPrefix))
+    if (!prefix) continue
+
+    for (const name of text.slice(prefix.length).split('、').map(item => item.trim())) {
+      if (!name || looksLikeUuid(name) || seen.has(name)) continue
+      seen.add(name)
+      names.push(name)
+    }
+  }
+
+  return names
 }
 
 function splitDraftUnderstandingItems(text) {
@@ -128,29 +181,56 @@ export function usePendingSessionPresentation({
 
   const pendingSessionIcon = computed(() => pendingSessionMeta.value.icon)
 
+  const pendingSessionLeadLabel = computed(() => {
+    if (pendingSessionNode.value === 'draft_confirmation') {
+      return '📚 数据来源：'
+    }
+    return '💬 您的问题：'
+  })
+
+  const pendingSessionLeadText = computed(() => {
+    if (pendingSessionNode.value === 'draft_confirmation') {
+      const draftTableNames = normalizeNameList(
+        pendingConfirmationView.value?.draft?.selected_table_names
+      )
+      if (draftTableNames.length > 0) {
+        return draftTableNames.join('、')
+      }
+
+      const safeConstraintTableNames = extractTableSourceNames(
+        pendingConfirmationView.value?.context?.safe_summary?.known_constraints
+      )
+      if (safeConstraintTableNames.length > 0) {
+        return safeConstraintTableNames.join('、')
+      }
+
+      const selectedTableIds = new Set(pendingTableSelection.value?.selected_table_ids || [])
+      const candidateTableNames = normalizeNameList(
+        (pendingTableSelection.value?.candidates || [])
+          .filter(candidate => selectedTableIds.size === 0 || selectedTableIds.has(candidate.table_id))
+          .map(candidate => candidate.table_name)
+      )
+      if (candidateTableNames.length > 0) {
+        return candidateTableNames.join('、')
+      }
+
+      return '当前数据表尚未确定'
+    }
+
+    return pendingQueryText.value ||
+      pendingConfirmationView.value?.context?.question_text ||
+      pendingSessionState.value?.question_text ||
+      ''
+  })
+
+  const hasPendingSessionLead = computed(() => Boolean(pendingSessionLeadText.value))
+
   const pendingSessionSummaryItems = computed(() => {
-    const safeSummary = pendingConfirmationView.value?.context?.safe_summary || {}
-    const safeConstraints = Array.isArray(safeSummary.known_constraints) ? safeSummary.known_constraints : []
     const revisionRequest = pendingSessionState.value?.revision_request || {}
     const revisionText = revisionRequest.text || revisionRequest.source_text || revisionRequest.natural_language_reply || ''
 
     if (pendingSessionNode.value === 'table_resolution') {
-      if (pendingTableSelection.value?.manual_table_override || pendingSessionState.value.manual_table_override) {
-        return ['请从全部数据表中选择要查询的数据表，可单选，也可多选。']
-      }
-
-      const draftUnderstandingItems = splitDraftUnderstandingItems(
-        pendingConfirmationView.value?.draft?.natural_language || ''
-      )
-      if (draftUnderstandingItems.length > 0) {
-        return mergeSummaryItems(draftUnderstandingItems, safeConstraints)
-      }
-
-      const goalSummary = safeSummary.user_goal_summary
-        ? `当前理解：${safeSummary.user_goal_summary}`
-        : '系统已识别到可能相关的数据表，请确认后继续。'
-
-      return mergeSummaryItems([goalSummary], safeConstraints)
+      return []
     }
 
     if (pendingSessionNode.value === 'execution_guard') {
@@ -160,11 +240,13 @@ export function usePendingSessionPresentation({
     }
 
     if (pendingSessionNode.value === 'draft_confirmation') {
-      const draftUnderstandingItems = extractUnderstandingTexts(
-        pendingConfirmationView.value?.draft?.system_understanding
+      const draftUnderstandingItems = filterSummaryItems(
+        extractUnderstandingTexts(pendingConfirmationView.value?.draft?.system_understanding),
+        { excludeTableSource: true }
       )
-      const fallbackDraftUnderstandingItems = splitDraftUnderstandingItems(
-        pendingConfirmationView.value?.draft?.natural_language || ''
+      const fallbackDraftUnderstandingItems = filterSummaryItems(
+        splitDraftUnderstandingItems(pendingConfirmationView.value?.draft?.natural_language || ''),
+        { excludeTableSource: true }
       )
 
       if (draftUnderstandingItems.length > 0) {
@@ -180,9 +262,10 @@ export function usePendingSessionPresentation({
         )
       }
 
-      const fallback = pendingConfirmationView.value?.draft?.natural_language
-        || '系统已生成新的查询草稿，请确认是否继续。'
-      return mergeSummaryItems(buildRevisionSummaryItems(revisionText), [fallback])
+      return mergeSummaryItems(
+        buildRevisionSummaryItems(revisionText),
+        ['系统已生成新的查询草稿，请确认是否继续。']
+      )
     }
 
     return []
@@ -238,6 +321,9 @@ export function usePendingSessionPresentation({
     pendingSessionTitle,
     pendingSessionNodeLabel,
     pendingSessionIcon,
+    pendingSessionLeadLabel,
+    pendingSessionLeadText,
+    hasPendingSessionLead,
     pendingSessionSummaryItems,
     pendingSessionSummaryText,
     pendingSessionChallengeItem,
